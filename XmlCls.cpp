@@ -122,7 +122,7 @@ bool XmlDoc::XPath<bool>(std::string query)
 template <>
 std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
 {
-    std::vector<XmlNode>* NL = new std::vector<XmlNode>();
+    std::vector<XmlNode> NL;
     CHK_CONTEXT(std::vector<XmlNode>, ctxt);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
@@ -130,10 +130,10 @@ std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
     if (result->type == XPATH_NODESET)
     {
         auto ans = result->nodesetval;
-        NL->reserve(ans->nodeNr);
-        for (int i = 0; i < ans->nodeNr; i++) NL->emplace_back(XmlNode(ans->nodeTab[i]));
+        NL.reserve(ans->nodeNr);
+        for (int i = 0; i < ans->nodeNr; i++) NL.emplace_back(XmlNode(ans->nodeTab[i]));
         xmlXPathFreeObject(result);
-        return *NL;
+        return NL;
     }
     else
     {
@@ -239,7 +239,7 @@ bool XmlNode::XPath<bool>(std::string query)
 template <>
 std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
 {
-    std::vector<XmlNode>* NL = new std::vector<XmlNode>();
+    std::vector<XmlNode> NL;
     CHK_CONTEXT(std::vector<XmlNode>, ctxt);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
@@ -247,10 +247,10 @@ std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
     if (result->type == XPATH_NODESET)
     {
         auto ans = result->nodesetval;
-        NL->reserve(ans->nodeNr);
-        for (int i = 0; i < ans->nodeNr; i++) NL->emplace_back(XmlNode(ans->nodeTab[i]));
+        NL.reserve(ans->nodeNr);
+        for (int i = 0; i < ans->nodeNr; i++) NL.emplace_back(XmlNode(ans->nodeTab[i]));
         xmlXPathFreeObject(result);
-        return *NL;
+        return NL;
     }
     else
     {
