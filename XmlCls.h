@@ -15,6 +15,14 @@
 #include <libxml/xpathInternals.h>
 #include <libxml/xmlerror.h>
 
+#ifdef _WIN32
+#   define NOMINMAX
+#   include <windows.h>
+#   define EXPORT __declspec(dllexport)
+#else
+#   define EXPORT
+#   include "string.h"
+#endif
 
 /**
 * @struct Error
@@ -24,6 +32,7 @@
 * exceptions. Callers are expected to inspect and handle errors explicitly.
 */
 #include "Error.h"
+typedef Error* ErrorPtr;
 
 extern std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
 
@@ -40,7 +49,7 @@ extern std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
 * - All failures are reported through the @ref err member
 * - XPath contexts are cached per document
 */
-class XmlDoc
+class EXPORT XmlDoc
 {
 private:
     /* data */
@@ -86,6 +95,19 @@ public:
         return result;
     }
 
+    /**
+     * @brief Save document to given filename.
+     * @param filename Path to save.
+     * @return True on success.
+     */
+    bool Save(const char* filename);
+
+    /**
+     * @brief Save document to its last used path.
+     * @return True on success.
+     */
+    bool Save();
+    
    /**
     * @brief Evaluate an XPath expression relative to this document.
     * @tparam T Desired return type.
@@ -98,7 +120,7 @@ public:
 };
 
 
-class XmlNode
+class EXPORT XmlNode
 {
 private:
     /* data */
@@ -133,6 +155,12 @@ public:
         xmlBufferFree(buffer);
         return result;
     }
+    
+    /**
+     * @brief Replaces this node's content with parsed XML.
+     * @param XML New XML string.
+     */
+    void parse(std::string XML);
 
    /**
     * @brief Evaluate an XPath expression relative to this node.

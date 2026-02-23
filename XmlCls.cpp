@@ -4,7 +4,7 @@ std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
 #define XML_ERROR(T, data) \
     do { \
         xmlError e = *xmlGetLastError(); \
-        err = new Error{lvl::ERR, e.message, data}; \
+        err = new Error{err_level_t::ERR, e.message, data}; \
         xmlResetLastError(); return T(); \
     } while(0)
 
@@ -17,12 +17,25 @@ std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
         } \
     } while(0)
 
+Error* SetXmlError(const std::string& context) {
+    Error* err = new Error();
+    const xmlError* xerr = xmlGetLastError();
+    if (xerr && xerr->message)
+        err->msg = xerr->message;
+    else
+        err->msg = "Unknown libxml error";
+
+    err->level = ERR;
+    err->data = context;
+    return err;
+}
+
 XmlDoc::XmlDoc(const char *filename)
 {
     doc = xmlReadFile(filename, NULL, 0);
     if (doc == NULL) { 
         xmlError e = *xmlGetLastError(); 
-        err = new Error{lvl::ERR, e.message, filename}; 
+        err = new Error{err_level_t::ERR, e.message, filename}; 
         xmlResetLastError();
     }
 }
@@ -33,9 +46,27 @@ XmlDoc::XmlDoc(const char *content, int length)
     if (doc == NULL)
     {
         xmlError e = *xmlGetLastError();
-        err = new Error{lvl::ERR, e.message, std::string(e.str1)};
+        err = new Error{err_level_t::ERR, e.message, std::string(e.str1)};
         xmlResetLastError();
     }
+}
+
+bool XmlDoc::Save(const char* filename) {
+    if (!doc || !filename) return false;
+    bool rc = xmlSaveFormatFileEnc(filename, doc, "UTF-8", 1) >= 0;
+    if (!rc) return false;
+    if (!doc->URL || strcmp((const char*)doc->URL, filename) != 0) {
+        if (doc->URL) xmlFree((void*) doc->URL); 
+        doc->URL = xmlStrdup(BAD_CAST filename);
+    }
+    return true;
+}
+
+bool XmlDoc::Save() {
+    if (!doc) return false;
+    const char* url = (const char*)doc->URL;
+    if (!url || !*url) return false;
+    return Save(url);
 }
 
 XmlDoc::~XmlDoc()
@@ -60,7 +91,7 @@ std::string XmlDoc::XPath<std::string>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"string\"", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"string\"", query};
     }
     return std::string();
 }
@@ -81,7 +112,7 @@ double XmlDoc::XPath<double>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"number\"!", query};
     }
     return 0.0;
 }
@@ -92,7 +123,7 @@ int XmlDoc::XPath<int>(std::string query)
     double ans = XmlDoc::XPath<double>(query);
     if (err) return 0;
     if (ans != static_cast<int>(ans)) {
-        err = new Error{lvl::WARN, "Result is not an integer, truncating", query};
+        err = new Error{err_level_t::WARNING, "Result is not an integer, truncating", query};
     }
     
     return int(ans);
@@ -114,7 +145,7 @@ bool XmlDoc::XPath<bool>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"boolean!\"", query};
     }
     return false;
 }
@@ -138,7 +169,7 @@ std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"nodelist/resultset\"!", query};
     }
     return std::vector<XmlNode>();
 }
@@ -154,7 +185,7 @@ xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err)
     xpathCtx = xmlXPathNewContext(doc);
     if (xpathCtx == NULL)
     {
-        err = new Error{lvl::ERR, "Fatal error on XPath context", doc->URL ? (char *)doc->URL : "unknown"};
+        err = new Error{err_level_t::ERR, "Fatal error on XPath context", doc->URL ? (char *)doc->URL : "unknown"};
         xmlFreeDoc(doc);
         return (nullptr);
     }
@@ -177,7 +208,7 @@ std::string XmlNode::XPath<std::string>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"string\"", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"string\"", query};
     }
     return std::string();
 }
@@ -198,7 +229,7 @@ double XmlNode::XPath<double>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"number\"!", query};
     }
     return 0.0;
 }
@@ -209,7 +240,7 @@ int XmlNode::XPath<int>(std::string query)
     double ans = XmlNode::XPath<double>(query);
     if (err) return 0;
     if (ans != static_cast<int>(ans)) {
-        err = new Error{lvl::WARN, "Result is not an integer, truncating", query};
+        err = new Error{err_level_t::WARNING, "Result is not an integer, truncating", query};
     }
     
     return int(ans);
@@ -231,7 +262,7 @@ bool XmlNode::XPath<bool>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"boolean!\"", query};
     }
     return false;
 }
@@ -241,7 +272,7 @@ std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
 {
     std::vector<XmlNode> NL;
     CHK_CONTEXT(std::vector<XmlNode>, ctxt);
-    xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
+    xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
 
     if (result->type == XPATH_NODESET)
@@ -255,7 +286,32 @@ std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
+        err = new Error{err_level_t::ERR, "Result type is not \"nodelist/resultset\"!", query};
     }
     return std::vector<XmlNode>();
+}
+
+void XmlNode::parse(std::string XML) {
+    if (!node || !node->doc) return;
+    xmlDocPtr tempDoc = xmlReadMemory(XML.c_str(), XML.size(), nullptr, nullptr, 0);
+    if (!tempDoc) {
+        err = SetXmlError(XML.substr(0, 200));
+        return;
+    }
+
+    xmlNodePtr newNode = xmlDocGetRootElement(tempDoc);
+    if (!newNode) {
+        xmlFreeDoc(tempDoc);
+        err = SetXmlError("Could not extract root node from new XML");
+        return;
+    }
+
+    xmlUnlinkNode(node);
+    xmlFreeNode(node);
+
+    xmlNodePtr imported = xmlDocCopyNode(newNode, node->doc, 1);
+    xmlAddChild(node->parent, imported);
+    node = imported;
+
+    xmlFreeDoc(tempDoc);
 }
