@@ -71,8 +71,15 @@ bool XmlDoc::Save() {
 
 XmlDoc::~XmlDoc()
 {
-    // if (doc) xmlFreeDoc(doc);
-    doc = nullptr;
+    if (doc) { 
+        auto it = ctxt_map.find(doc);
+        if (it != ctxt_map.end()) {
+            if (it->second) xmlXPathFreeContext(it->second);
+            ctxt_map.erase(it);
+        }
+        xmlFreeDoc(doc);
+        doc = nullptr; 
+    }
 }
 
 template <>
