@@ -15,6 +15,12 @@ std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
             if (!ctxt) return T(); \
             ctxt_map[doc] = ctxt; \
         } \
+        \
+    if (ctxt->doc != doc) { \
+        ctxt = GetXPathContext(doc, err); \
+        if (!ctxt) return T(); \
+        ctxt_map[doc] = ctxt; \
+        } \
     } while(0)
 
 Error* SetXmlError(const std::string& context) {
@@ -110,18 +116,17 @@ double XmlDoc::XPath<double>(std::string query)
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(double, query);
 
+    double ans = 0.0;
     if (result->type == XPATH_NUMBER)
     {
-        double ans = result->floatval;
-        xmlXPathFreeObject(result);
-        return ans;
+        if (xmlXPathIsNaN(result->floatval)) err = new Error{err_level_t::ERR, "Result is NaN!", query};
+        else if (xmlXPathIsInf(result->floatval)) err = new Error{err_level_t::ERR, "Result is infinite!", query};
+        else ans = result->floatval;
     }
-    else
-    {
-        xmlXPathFreeObject(result);
-        err = new Error{err_level_t::ERR, "Result type is not \"number\"!", query};
-    }
-    return 0.0;
+    else err = new Error{err_level_t::ERR, "Result type is not \"number\"!", query};
+    
+    xmlXPathFreeObject(result);
+    return ans;
 }
 
 template <>
@@ -227,18 +232,17 @@ double XmlNode::XPath<double>(std::string query)
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(double, query);
 
+    double ans = 0.0;
     if (result->type == XPATH_NUMBER)
     {
-        double ans = result->floatval;
-        xmlXPathFreeObject(result);
-        return ans;
+        if (xmlXPathIsNaN(result->floatval)) err = new Error{err_level_t::ERR, "Result is NaN!", query};
+        else if (xmlXPathIsInf(result->floatval)) err = new Error{err_level_t::ERR, "Result is infinite!", query};
+        else ans = result->floatval;
     }
-    else
-    {
-        xmlXPathFreeObject(result);
-        err = new Error{err_level_t::ERR, "Result type is not \"number\"!", query};
-    }
-    return 0.0;
+    else err = new Error{err_level_t::ERR, "Result type is not \"number\"!", query};
+    
+    xmlXPathFreeObject(result);
+    return ans;
 }
 
 template <>
