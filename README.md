@@ -113,7 +113,7 @@ Invalid conversions or empty result sets populate the `Error` state instead of t
 XmlDoc doc("config.xml");
 HANDLE_ERR(doc.err);
 
-XmlNode root = doc.XPath<XmlNode>("/Config");
+std::vector<XmlNode> root = (doc.XPath<std::vector<XmlNode>>("/Config"))[0];
 HANDLE_ERR(root.err);
 
 int rate = root.XPath<int>("number(@Rate)");
