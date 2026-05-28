@@ -5,8 +5,6 @@
 * access to XML documents and nodes.
 */
 
-#pragma once
-
 #include <stdio.h>
 #include <map>
 #include <libxml/parser.h>
@@ -51,14 +49,30 @@ extern std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
 */
 class EXPORT XmlDoc
 {
-private:
-    /* data */
+
 public:
-    xmlDocPtr doc = nullptr; /* the resulting document tree */
     ErrorPtr err = nullptr;
     xmlXPathContextPtr ctxt = nullptr;
 
     XmlDoc() {}
+    XmlDoc(const XmlDoc&) = delete;
+    XmlDoc& operator=(const XmlDoc&) = delete;
+
+    XmlDoc(XmlDoc&& other) noexcept {
+        doc = other.doc;
+        other.doc = nullptr;
+    }
+
+    XmlDoc& operator=(XmlDoc&& other) noexcept {
+        if (this != &other) {
+            clear();
+
+            doc = other.doc;
+            other.doc = nullptr;
+        }
+        return *this;
+    }
+
    /**
     * @brief Construct an XmlDoc from a file on disk.
     * @param filename Path to the XML file.
@@ -117,8 +131,22 @@ public:
     * Errors are reported via @ref err.
     */
     template <typename T> T XPath(std::string query);
-};
 
+private:
+    xmlDocPtr doc = nullptr;
+
+    void clear() {
+        if (doc) {
+            auto it = ctxt_map.find(doc);
+            if (it != ctxt_map.end()) {
+                if (it->second) xmlXPathFreeContext(it->second);
+                ctxt_map.erase(it);
+            }
+            // xmlFreeDoc(doc);
+            doc = nullptr;
+        }
+    }
+};
 
 class EXPORT XmlNode
 {

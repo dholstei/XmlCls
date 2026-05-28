@@ -77,15 +77,7 @@ bool XmlDoc::Save() {
 
 XmlDoc::~XmlDoc()
 {
-    if (doc) { 
-        auto it = ctxt_map.find(doc);
-        if (it != ctxt_map.end()) {
-            if (it->second) xmlXPathFreeContext(it->second);
-            ctxt_map.erase(it);
-        }
-        xmlFreeDoc(doc);
-        doc = nullptr; 
-    }
+    clear();
 }
 
 template <>
@@ -173,6 +165,11 @@ std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
     if (result->type == XPATH_NODESET)
     {
         auto ans = result->nodesetval;
+        if (!ans) {
+            xmlXPathFreeObject(result);
+            err = new Error{lvl::ERR, "Result is null node set!", query};
+            return std::vector<XmlNode>();
+        }
         NL.reserve(ans->nodeNr);
         for (int i = 0; i < ans->nodeNr; i++) NL.emplace_back(XmlNode(ans->nodeTab[i]));
         xmlXPathFreeObject(result);
@@ -289,6 +286,11 @@ std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
     if (result->type == XPATH_NODESET)
     {
         auto ans = result->nodesetval;
+        if (!ans) {
+            xmlXPathFreeObject(result);
+            err = new Error{lvl::ERR, "Result is null node set!", query};
+            return std::vector<XmlNode>();
+        }
         NL.reserve(ans->nodeNr);
         for (int i = 0; i < ans->nodeNr; i++) NL.emplace_back(XmlNode(ans->nodeTab[i]));
         xmlXPathFreeObject(result);

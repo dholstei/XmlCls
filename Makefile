@@ -30,17 +30,17 @@ all: XmlCls.a
 
 OBJECTS=
 
-%.o:	%.cpp
+%.o:	%.cpp %.h
 	@if $(CPP) $(CPPFLAGS) $(INCLUDES) -c $^;\
 		then echo "--- Compile $^: Success ---" | $(LOGGER) ;\
 		else echo "--- Compile $^: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 XmlCls.a:	XmlCls.o
-	@if ar rcs $@ $^;\
+	@if ar rcs $@ $^ && ranlib $@;\
 		then echo "--- Build $@: Success ---" | $(LOGGER) ;\
 		else echo "--- Build $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 clean:
-	@if rm -fv release/* debug/* *.o && rm -rf repo/;\
+	@if rm -fv *.a *.o && rm -rf repo/;\
 		then echo "--- $@: Success ---" | $(LOGGER) ;\
 		else echo "--- $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
