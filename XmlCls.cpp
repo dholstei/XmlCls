@@ -327,7 +327,6 @@ void XmlNode::parse(std::string XML) {
     xmlFreeDoc(tempDoc);
 }
 
-
 static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDoc, ErrorPtr& err)
 {
     if (!ownerDoc) {

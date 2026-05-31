@@ -211,6 +211,14 @@ public:
      * @return Wrapper for the inserted node, or an empty XmlNode on error.
      */
     XmlNode AddBefore(std::string XmlStr);
+    XmlNode AddBefore(std::vector<std::string> XmlStrs) {
+        XmlNode lastAdded;
+        for (const auto& str : XmlStrs) {
+            lastAdded = AddBefore(str);
+            if (lastAdded.err) return XmlNode();
+        }
+        return lastAdded;
+    }
 
     /**
      * @brief Parse XML text and insert it after this node as a sibling.
@@ -218,7 +226,35 @@ public:
      * @return Wrapper for the inserted node, or an empty XmlNode on error.
      */
     XmlNode AddAfter(std::string XmlStr);
+    XmlNode AddAfter(std::vector<std::string> XmlStrs) {
+        XmlNode lastAdded;
+        for (const auto& str : XmlStrs) {
+            lastAdded = AddAfter(str);
+            if (lastAdded.err) return XmlNode();
+        }
+        return lastAdded;
+    }
 
+    /**
+     * @brief Remove this node from the XML tree and invalidate the wrapper.
+     */
+    void Delete()
+    {
+        if (!node) return;
+
+        xmlNodePtr doomed = node;
+
+        // Invalidate this wrapper immediately
+        node = nullptr;
+        doc  = nullptr;
+        ctxt = nullptr;
+
+        // Remove from tree
+        xmlUnlinkNode(doomed);
+
+        // Free subtree
+        xmlFreeNode(doomed);
+    }
 /**
     * @brief Evaluate an XPath expression relative to this node.
     * @tparam T Desired return type.
