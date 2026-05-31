@@ -114,13 +114,13 @@ public:
      * @param filename Path to save.
      * @return True on success.
      */
-    bool Save(const char* filename);
+    void Save(const char* filename);
 
     /**
      * @brief Save document to its last used path.
      * @return True on success.
      */
-    bool Save();
+    void Save();
     
    /**
     * @brief Evaluate an XPath expression relative to this document.
@@ -190,7 +190,36 @@ public:
      */
     void parse(std::string XML);
 
-   /**
+    /**
+     * @brief Parse XML text and append it as a child of this node.
+     * @param XmlStr XML text for the node to insert.
+     * @return Wrapper for the inserted node, or an empty XmlNode on error.
+     */
+    XmlNode AddChild(std::string XmlStr);
+    XmlNode AddChild(std::vector<std::string> XmlStrs) {
+        XmlNode lastAdded;
+        for (const auto& str : XmlStrs) {
+            lastAdded = AddChild(str);
+            if (lastAdded.err) return XmlNode();
+        }
+        return lastAdded;
+    }
+
+    /**
+     * @brief Parse XML text and insert it before this node as a sibling.
+     * @param XmlStr XML text for the node to insert.
+     * @return Wrapper for the inserted node, or an empty XmlNode on error.
+     */
+    XmlNode AddBefore(std::string XmlStr);
+
+    /**
+     * @brief Parse XML text and insert it after this node as a sibling.
+     * @param XmlStr XML text for the node to insert.
+     * @return Wrapper for the inserted node, or an empty XmlNode on error.
+     */
+    XmlNode AddAfter(std::string XmlStr);
+
+/**
     * @brief Evaluate an XPath expression relative to this node.
     * @tparam T Desired return type.
     * @param expr XPath expression.

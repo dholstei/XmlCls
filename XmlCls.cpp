@@ -38,7 +38,7 @@ Error* SetXmlError(const std::string& context) {
 
 XmlDoc::XmlDoc(const char *filename)
 {
-    doc = xmlReadFile(filename, NULL, 0);
+    doc = xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS);
     if (doc == NULL) { 
         xmlError e = *xmlGetLastError(); 
         err = new Error{lvl::ERR, e.message, filename}; 
@@ -48,7 +48,7 @@ XmlDoc::XmlDoc(const char *filename)
 
 XmlDoc::XmlDoc(const char *content, int length)
 {
-    doc = xmlReadMemory(content, length, "noname.xml", NULL, 0);
+    doc = xmlReadMemory(content, length, "noname.xml", NULL, XML_PARSE_NOBLANKS);
     if (doc == NULL)
     {
         xmlError e = *xmlGetLastError();
@@ -57,22 +57,22 @@ XmlDoc::XmlDoc(const char *content, int length)
     }
 }
 
-bool XmlDoc::Save(const char* filename) {
-    if (!doc || !filename) return false;
+void XmlDoc::Save(const char* filename) {
+    if (!doc || !filename) return;
     bool rc = xmlSaveFormatFileEnc(filename, doc, "UTF-8", 1) >= 0;
-    if (!rc) return false;
+    if (!rc) { err = SetXmlError(filename); return;}
     if (!doc->URL || strcmp((const char*)doc->URL, filename) != 0) {
         if (doc->URL) xmlFree((void*) doc->URL); 
         doc->URL = xmlStrdup(BAD_CAST filename);
     }
-    return true;
+    return;
 }
 
-bool XmlDoc::Save() {
-    if (!doc) return false;
+void XmlDoc::Save() {
+    if (!doc) return;
     const char* url = (const char*)doc->URL;
-    if (!url || !*url) return false;
-    return Save(url);
+    if (!url || !*url) return;
+    Save(url);
 }
 
 XmlDoc::~XmlDoc()
@@ -167,7 +167,6 @@ std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
         auto ans = result->nodesetval;
         if (!ans) {
             xmlXPathFreeObject(result);
-            err = new Error{lvl::ERR, "Result is null node set!", query};
             return std::vector<XmlNode>();
         }
         NL.reserve(ans->nodeNr);
@@ -288,7 +287,6 @@ std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
         auto ans = result->nodesetval;
         if (!ans) {
             xmlXPathFreeObject(result);
-            err = new Error{lvl::ERR, "Result is null node set!", query};
             return std::vector<XmlNode>();
         }
         NL.reserve(ans->nodeNr);
@@ -327,4 +325,104 @@ void XmlNode::parse(std::string XML) {
     node = imported;
 
     xmlFreeDoc(tempDoc);
+}
+
+
+static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDoc, ErrorPtr& err)
+{
+    if (!ownerDoc) {
+        err = new Error{lvl::ERR, "Node is not attached to an XML document", XmlStr.substr(0, 200)};
+        return nullptr;
+    }
+
+    xmlDocPtr tempDoc = xmlReadMemory(XmlStr.c_str(), (int)XmlStr.size(), nullptr, nullptr, 0);
+    if (!tempDoc) {
+        err = SetXmlError(XmlStr.substr(0, 200));
+        return nullptr;
+    }
+
+    xmlNodePtr parsedRoot = xmlDocGetRootElement(tempDoc);
+    if (!parsedRoot) {
+        xmlFreeDoc(tempDoc);
+        err = new Error{lvl::ERR, "Could not extract root node from XML", XmlStr.substr(0, 200)};
+        return nullptr;
+    }
+
+    xmlNodePtr imported = xmlDocCopyNode(parsedRoot, ownerDoc, 1);
+    xmlFreeDoc(tempDoc);
+
+    if (!imported) {
+        err = new Error{lvl::ERR, "Could not copy node into target XML document", XmlStr.substr(0, 200)};
+        return nullptr;
+    }
+
+    return imported;
+}
+
+XmlNode XmlNode::AddChild(std::string XmlStr)
+{
+    if (!node || !node->doc) {
+        err = new Error{lvl::ERR, "Cannot add child to null XmlNode", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+
+    xmlNodePtr imported = XmlNodeFromString(XmlStr, node->doc, err);
+    if (!imported) return XmlNode();
+
+    xmlNodePtr added = xmlAddChild(node, imported);
+    if (!added) {
+        xmlFreeNode(imported);
+        err = new Error{lvl::ERR, "xmlAddChild failed", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+
+    return XmlNode(added);
+}
+
+XmlNode XmlNode::AddBefore(std::string XmlStr)
+{
+    if (!node || !node->doc) {
+        err = new Error{lvl::ERR, "Cannot add sibling before null XmlNode", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+    if (!node->parent) {
+        err = new Error{lvl::ERR, "Cannot add sibling before a node with no parent", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+
+    xmlNodePtr imported = XmlNodeFromString(XmlStr, node->doc, err);
+    if (!imported) return XmlNode();
+
+    xmlNodePtr added = xmlAddPrevSibling(node, imported);
+    if (!added) {
+        xmlFreeNode(imported);
+        err = new Error{lvl::ERR, "xmlAddPrevSibling failed", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+
+    return XmlNode(added);
+}
+
+XmlNode XmlNode::AddAfter(std::string XmlStr)
+{
+    if (!node || !node->doc) {
+        err = new Error{lvl::ERR, "Cannot add sibling after null XmlNode", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+    if (!node->parent) {
+        err = new Error{lvl::ERR, "Cannot add sibling after a node with no parent", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+
+    xmlNodePtr imported = XmlNodeFromString(XmlStr, node->doc, err);
+    if (!imported) return XmlNode();
+
+    xmlNodePtr added = xmlAddNextSibling(node, imported);
+    if (!added) {
+        xmlFreeNode(imported);
+        err = new Error{lvl::ERR, "xmlAddNextSibling failed", XmlStr.substr(0, 200)};
+        return XmlNode();
+    }
+
+    return XmlNode(added);
 }
