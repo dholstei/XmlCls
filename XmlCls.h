@@ -12,6 +12,7 @@
 #include <libxml/xpath.h>
 #include <libxml/xpathInternals.h>
 #include <libxml/xmlerror.h>
+#include <mutex>
 
 #ifdef _WIN32
 #   define NOMINMAX
@@ -32,8 +33,9 @@
 #include "Error.h"
 typedef Error* ErrorPtr;
 
-extern std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
-
+class EXPORT XmlDoc;
+extern std::mutex doc_map_mtx;
+extern std::map<xmlDocPtr, XmlDoc*> doc_map;
 
 /**
 * @class XmlDoc
@@ -53,6 +55,8 @@ class EXPORT XmlDoc
 public:
     ErrorPtr err = nullptr;
     xmlXPathContextPtr ctxt = nullptr;
+    XmlDoc* JRNL = nullptr;
+    mutable std::recursive_mutex mtx;
 
     XmlDoc() {}
     XmlDoc(const XmlDoc&) = delete;
@@ -61,6 +65,12 @@ public:
     XmlDoc(XmlDoc&& other) noexcept {
         doc = other.doc;
         other.doc = nullptr;
+        doc_map[doc] = this;
+    }
+
+    XmlDoc(xmlDocPtr doc) noexcept {
+        this->doc = doc;
+        doc_map[doc] = this;
     }
 
     XmlDoc& operator=(XmlDoc&& other) noexcept {
@@ -137,11 +147,8 @@ private:
 
     void clear() {
         if (doc) {
-            auto it = ctxt_map.find(doc);
-            if (it != ctxt_map.end()) {
-                if (it->second) xmlXPathFreeContext(it->second);
-                ctxt_map.erase(it);
-            }
+            auto it = doc_map.find(doc);
+            if (it != doc_map.end()) doc_map.erase(it);
             // xmlFreeDoc(doc);
             doc = nullptr;
         }

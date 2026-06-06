@@ -1,26 +1,13 @@
 #include "XmlCls.h"
 
-std::map<xmlDocPtr, xmlXPathContextPtr> ctxt_map;
+std::mutex doc_map_mtx;
+std::map<xmlDocPtr, XmlDoc*> doc_map;
+
 #define XML_ERROR(T, data) \
     do { \
         xmlError e = *xmlGetLastError(); \
         err = new Error{lvl::ERR, e.message, data}; \
         xmlResetLastError(); return T(); \
-    } while(0)
-
-#define CHK_CONTEXT(T, ctxt) \
-    do { \
-        if (!ctxt) { \
-            ctxt = GetXPathContext(doc, err); \
-            if (!ctxt) return T(); \
-            ctxt_map[doc] = ctxt; \
-        } \
-        \
-    if (ctxt->doc != doc) { \
-        ctxt = GetXPathContext(doc, err); \
-        if (!ctxt) return T(); \
-        ctxt_map[doc] = ctxt; \
-        } \
     } while(0)
 
 Error* SetXmlError(const std::string& context) {
@@ -44,6 +31,7 @@ XmlDoc::XmlDoc(const char *filename)
         err = new Error{lvl::ERR, e.message, filename}; 
         xmlResetLastError();
     }
+    doc_map[doc] = this;
 }
 
 XmlDoc::XmlDoc(const char *content, int length)
@@ -55,6 +43,7 @@ XmlDoc::XmlDoc(const char *content, int length)
         err = new Error{lvl::ERR, e.message, std::string(e.str1)};
         xmlResetLastError();
     }
+    doc_map[doc] = this;
 }
 
 void XmlDoc::Save(const char* filename) {
@@ -83,7 +72,7 @@ XmlDoc::~XmlDoc()
 template <>
 std::string XmlDoc::XPath<std::string>(std::string query)
 {
-    CHK_CONTEXT(std::string, ctxt);
+    ctxt = GetXPathContext(doc, err); return std::string();
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::string, query);
 
@@ -104,7 +93,7 @@ std::string XmlDoc::XPath<std::string>(std::string query)
 template <>
 double XmlDoc::XPath<double>(std::string query)
 {
-    CHK_CONTEXT(double, ctxt);
+    ctxt = GetXPathContext(doc, err); return 0.0;
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(double, query);
 
@@ -136,7 +125,7 @@ int XmlDoc::XPath<int>(std::string query)
 template <>
 bool XmlDoc::XPath<bool>(std::string query)
 {
-    CHK_CONTEXT(bool, ctxt);
+    ctxt = GetXPathContext(doc, err); return false;
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(bool, query);
 
@@ -158,7 +147,7 @@ template <>
 std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
 {
     std::vector<XmlNode> NL;
-    CHK_CONTEXT(std::vector<XmlNode>, ctxt);
+    ctxt = GetXPathContext(doc, err); return std::vector<XmlNode>();
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
 
@@ -186,8 +175,21 @@ xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err)
 {
     xmlXPathContextPtr xpathCtx = nullptr;
 
-    if ((xpathCtx = ctxt_map[doc]) != nullptr)
-        return xpathCtx;
+    XmlDoc* DOM = doc_map[doc];
+    if (DOM) {
+        xpathCtx = DOM->ctxt;
+        if (xpathCtx) return xpathCtx;
+        else {
+            xpathCtx = xmlXPathNewContext(doc);
+            if (xpathCtx == NULL)
+            {
+                err = new Error{lvl::ERR, "Fatal error on XPath context", doc->URL ? (char *)doc->URL : "unknown"};
+                return nullptr;
+            }
+            DOM->ctxt = xpathCtx;
+            return xpathCtx;
+        }
+    }
 
     /* Create xpath evaluation context */
     xpathCtx = xmlXPathNewContext(doc);
@@ -203,7 +205,7 @@ xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err)
 template <>
 std::string XmlNode::XPath<std::string>(std::string query)
 {
-    CHK_CONTEXT(std::string, ctxt);
+    ctxt = GetXPathContext(doc, err); return std::string();
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::string, query);
 
@@ -224,7 +226,7 @@ std::string XmlNode::XPath<std::string>(std::string query)
 template <>
 double XmlNode::XPath<double>(std::string query)
 {
-    CHK_CONTEXT(double, ctxt);
+    ctxt = GetXPathContext(doc, err); return 0.0;
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(double, query);
 
@@ -256,7 +258,7 @@ int XmlNode::XPath<int>(std::string query)
 template <>
 bool XmlNode::XPath<bool>(std::string query)
 {
-    CHK_CONTEXT(bool, ctxt);
+    ctxt = GetXPathContext(doc, err); return false;
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(bool, query);
 
@@ -278,7 +280,7 @@ template <>
 std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
 {
     std::vector<XmlNode> NL;
-    CHK_CONTEXT(std::vector<XmlNode>, ctxt);
+    ctxt = GetXPathContext(doc, err); return std::vector<XmlNode>();
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
 
