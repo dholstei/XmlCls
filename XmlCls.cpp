@@ -1,4 +1,5 @@
 #include "XmlCls.h"
+#include "base64.h"
 
 std::mutex doc_map_mtx;
 std::map<xmlDocPtr, XmlDoc*> doc_map;
@@ -72,7 +73,7 @@ XmlDoc::~XmlDoc()
 template <>
 std::string XmlDoc::XPath<std::string>(std::string query)
 {
-    ctxt = GetXPathContext(doc, err); return std::string();
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::string, query);
 
@@ -93,7 +94,7 @@ std::string XmlDoc::XPath<std::string>(std::string query)
 template <>
 double XmlDoc::XPath<double>(std::string query)
 {
-    ctxt = GetXPathContext(doc, err); return 0.0;
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(double, query);
 
@@ -125,7 +126,7 @@ int XmlDoc::XPath<int>(std::string query)
 template <>
 bool XmlDoc::XPath<bool>(std::string query)
 {
-    ctxt = GetXPathContext(doc, err); return false;
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(bool, query);
 
@@ -147,7 +148,7 @@ template <>
 std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
 {
     std::vector<XmlNode> NL;
-    ctxt = GetXPathContext(doc, err); return std::vector<XmlNode>();
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
 
@@ -205,7 +206,7 @@ xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err)
 template <>
 std::string XmlNode::XPath<std::string>(std::string query)
 {
-    ctxt = GetXPathContext(doc, err); return std::string();
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::string, query);
 
@@ -226,7 +227,7 @@ std::string XmlNode::XPath<std::string>(std::string query)
 template <>
 double XmlNode::XPath<double>(std::string query)
 {
-    ctxt = GetXPathContext(doc, err); return 0.0;
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(double, query);
 
@@ -258,7 +259,7 @@ int XmlNode::XPath<int>(std::string query)
 template <>
 bool XmlNode::XPath<bool>(std::string query)
 {
-    ctxt = GetXPathContext(doc, err); return false;
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(bool, query);
 
@@ -280,7 +281,7 @@ template <>
 std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
 {
     std::vector<XmlNode> NL;
-    ctxt = GetXPathContext(doc, err); return std::vector<XmlNode>();
+    ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
 
@@ -319,11 +320,11 @@ void XmlNode::parse(std::string XML) {
         return;
     }
 
-    xmlUnlinkNode(node);
-    xmlFreeNode(node);
+    xmlNodePtr parent = node->parent;
+    xmlUnlinkNode(node); xmlFreeNode(node);
 
     xmlNodePtr imported = xmlDocCopyNode(newNode, node->doc, 1);
-    xmlAddChild(node->parent, imported);
+    xmlAddChild(parent, imported);
     node = imported;
 
     xmlFreeDoc(tempDoc);
@@ -426,4 +427,77 @@ XmlNode XmlNode::AddAfter(std::string XmlStr)
     }
 
     return XmlNode(added);
+}
+
+namespace JRNL {
+
+inline void Log(XmlDoc* journal, const std::string& xml)
+{
+    if (!journal) return;
+    auto root = journal->XPath<std::vector<XmlNode>>("/*");
+    if (root.empty()) return;
+    root[0].AddChild(xml);
+}
+
+void Add(XmlNode& added)
+{
+    if (!added.doc || !doc_map[added.doc]->JRNL) return;
+
+    std::string xml =
+        std::string("<Change Type=\"Add\"><TimeStamp/>") + 
+        "<XPathLoc Type=\"Self\">" + 
+        reinterpret_cast<const char*>(xmlEncodeSpecialChars(added.doc, xmlGetNodePath(added.node))) + 
+        "</XPathLoc><Reversed TimeStamp=\"\" Value=\"false\"/></Change>";
+
+    Log(doc_map[added.doc]->JRNL, xml);
+}
+
+void Modify(XmlNode& node, const std::string& oldXML)
+{
+    if (!node.doc || !doc_map[node.doc]->JRNL) return;
+
+    std::string xml =
+        std::string("<Change Type=\"Modify\"><TimeStamp/><XPathLoc Type=\"Self\">") + 
+        reinterpret_cast<const char*>(xmlEncodeSpecialChars(node.doc, xmlGetNodePath(node.node))) + 
+        "</XPathLoc>"
+        "<Node Encoding=\"Base64\">" + base64_encode(oldXML) + "</Node>"
+        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
+        "</Change>";
+
+    Log(doc_map[node.doc]->JRNL, xml);
+}
+
+void Delete(XmlNode& node)
+{
+    if (!node.doc || !doc_map[node.doc]->JRNL) return;
+
+    std::string oldXML = node.XML();
+
+    std::string locType;
+    std::string loc;
+
+    if (node.node->prev) {
+        locType = "SiblingAfter";
+        loc = reinterpret_cast<const char*>(xmlGetNodePath(node.node->prev));
+    }
+    else if (node.node->next) {
+        locType = "SiblingBefore";
+        loc = reinterpret_cast<const char*>(xmlGetNodePath(node.node->next));
+    }
+    else {
+        locType = "Child";
+        loc = reinterpret_cast<const char*>(xmlGetNodePath(node.node->parent));
+    }
+
+    std::string xml =
+        std::string("<Change Type=\"Deletion\"><TimeStamp/>") +
+        "<XPathLoc Type=\"" + locType + "\">" + 
+        reinterpret_cast<const char*>(xmlEncodeSpecialChars(node.doc, BAD_CAST loc.c_str())) + 
+        "</XPathLoc>" +
+        "<Node Encoding=\"Base64\">" + base64_encode(oldXML) + "</Node>" +
+        "<Reversed TimeStamp=\"\" Value=\"false\"/></Change>";
+
+    Log(doc_map[node.doc]->JRNL, xml);
+}
+
 }

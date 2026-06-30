@@ -32,8 +32,9 @@
 */
 #include "Error.h"
 typedef Error* ErrorPtr;
+#include "base64.h"
 
-class EXPORT XmlDoc;
+class EXPORT XmlDoc;    // Forward declaration for doc_map
 extern std::mutex doc_map_mtx;
 extern std::map<xmlDocPtr, XmlDoc*> doc_map;
 
@@ -142,11 +143,25 @@ public:
     */
     template <typename T> T XPath(std::string query);
 
+    void OpenJournal(const char* filename) {
+        JRNL = new XmlDoc(filename);
+        if (!JRNL->doc) {
+            delete JRNL;
+            JRNL = nullptr;
+        }
+    }
+
+    void CreateJournal(const char* filename) {
+        JRNL = new XmlDoc("<JRNL/>", 7);
+        JRNL->Save(filename);
+    }
+
 private:
     xmlDocPtr doc = nullptr;
 
     void clear() {
         if (doc) {
+            if (JRNL) { JRNL->Save(); delete JRNL; JRNL = nullptr; }
             auto it = doc_map.find(doc);
             if (it != doc_map.end()) doc_map.erase(it);
             // xmlFreeDoc(doc);
@@ -274,3 +289,9 @@ public:
 };
 
 xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err);
+
+namespace JRNL {
+    void Add(XmlNode& added);
+    void Delete(XmlNode& node);
+    void Modify(XmlNode& node, const std::string& oldXML);
+}

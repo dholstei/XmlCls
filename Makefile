@@ -13,9 +13,9 @@ CPPFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings
 
 INCLUDES:=-I/usr/include/libxml2
 INCLUDES:=$(INCLUDES) -I/usr/include
-INCLUDES:=$(INCLUDES) -I./ -I../XmlCls
+INCLUDES:=$(INCLUDES) -I./ -I../XmlCls -I../cpp-base64
 LDFLAGS=$(DEBUG)
-LDLIBS:=-lcrypto
+LDLIBS:=-lcrypto -lBase64
 # ifeq ($(STATIC),)
 # else
 # endif
@@ -26,7 +26,12 @@ else
 	BINDIR:=debug
 endif
 
-all: XmlCls.a
+all: libXmlCls.a
+
+test: test.cpp libXmlCls.a
+	@if $(CPP) $(CPPFLAGS) $(INCLUDES) -o $@  $^ $(LDFLAGS) -L../cpp-base64 $(LDLIBS) -lxml2;\
+		then echo "--- Build test: Success ---" | $(LOGGER) ;\
+		else echo "--- Build test: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 OBJECTS=
 
@@ -35,12 +40,12 @@ OBJECTS=
 		then echo "--- Compile $^: Success ---" | $(LOGGER) ;\
 		else echo "--- Compile $^: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
-XmlCls.a:	XmlCls.o
+libXmlCls.a:	XmlCls.o
 	@if ar rcs $@ $^ && ranlib $@;\
 		then echo "--- Build $@: Success ---" | $(LOGGER) ;\
 		else echo "--- Build $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 clean:
-	@if rm -fv *.a *.o && rm -rf repo/;\
+	@if rm -fv *.a *.o test && rm -rf repo/;\
 		then echo "--- $@: Success ---" | $(LOGGER) ;\
 		else echo "--- $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
