@@ -111,7 +111,7 @@ public:
     *
     * @return XML string representation of the document.
     */
-    std::string XML() {
+    std::string XML() const {
         xmlChar *xmlbuff;
         int buffersize;
         xmlDocDumpFormatMemory(doc, &xmlbuff, &buffersize, 1);
@@ -119,6 +119,9 @@ public:
         xmlFree(xmlbuff);
         return result;
     }
+    std::string to_string() const { return XML(); }
+    explicit operator std::string() const { return XML(); }
+    std::ostream& operator<<(std::ostream& os) { return os << XML(); }
 
     /**
      * @brief Save document to given filename.
@@ -198,14 +201,17 @@ public:
     *
     * @return XML string representation of the node only.
     */
-    std::string XML() {
+    std::string XML() const {
         xmlBufferPtr buffer = xmlBufferCreate();
         xmlNodeDump(buffer, doc, node, 0, 1);
         std::string result = std::string((char *)buffer->content, buffer->use);
         xmlBufferFree(buffer);
         return result;
     }
-    
+    std::string to_string() const { return XML(); }
+    explicit operator std::string() const { return XML(); }
+    std::ostream& operator<<(std::ostream& os) { return os << XML(); }
+
     /**
      * @brief Replaces this node's content with parsed XML.
      * @param XML New XML string.

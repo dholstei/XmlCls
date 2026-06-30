@@ -2,7 +2,7 @@
 #include "base64.h"
 
 std::mutex doc_map_mtx;
-std::map<xmlDocPtr, XmlDoc*> doc_map;
+std::map<xmlDocPtr, XmlDoc*> doc_map, jrnl_map;
 
 #define XML_ERROR(T, data) \
     do { \
@@ -305,29 +305,43 @@ std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
     return std::vector<XmlNode>();
 }
 
-void XmlNode::parse(std::string XML) {
+void XmlNode::parse(std::string XML)
+{
     if (!node || !node->doc) return;
+
+    xmlDocPtr ownerDoc = node->doc;
+
     xmlDocPtr tempDoc = xmlReadMemory(XML.c_str(), XML.size(), nullptr, nullptr, 0);
     if (!tempDoc) {
         err = SetXmlError(XML.substr(0, 200));
         return;
     }
 
-    xmlNodePtr newNode = xmlDocGetRootElement(tempDoc);
-    if (!newNode) {
+    xmlNodePtr parsedRoot = xmlDocGetRootElement(tempDoc);
+    if (!parsedRoot) {
         xmlFreeDoc(tempDoc);
         err = SetXmlError("Could not extract root node from new XML");
         return;
     }
 
-    xmlNodePtr parent = node->parent;
-    xmlUnlinkNode(node); xmlFreeNode(node);
-
-    xmlNodePtr imported = xmlDocCopyNode(newNode, node->doc, 1);
-    xmlAddChild(parent, imported);
-    node = imported;
-
+    xmlNodePtr imported = xmlDocCopyNode(parsedRoot, ownerDoc, 1);
     xmlFreeDoc(tempDoc);
+
+    if (!imported) {
+        err = new Error{lvl::ERR, "Could not copy node into target XML document", XML.substr(0, 200)};
+        return;
+    }
+
+    xmlNodePtr oldNode = node;
+
+    JRNL::Modify(*this, oldNode ? this->XML() : std::string());
+
+    xmlReplaceNode(oldNode, imported);
+    xmlFreeNode(oldNode);
+
+    node = imported;
+    doc  = ownerDoc;
+    ctxt = nullptr;
 }
 
 static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDoc, ErrorPtr& err)
@@ -429,6 +443,22 @@ XmlNode XmlNode::AddAfter(std::string XmlStr)
     return XmlNode(added);
 }
 
+static std::string CurrentIsoTimestampUTC()
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+
+#ifdef _WIN32
+    gmtime_s(&tm, &now);
+#else
+    gmtime_r(&now, &tm);
+#endif
+
+    char buffer[32]{};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buffer;
+}
+
 namespace JRNL {
 
 inline void Log(XmlDoc* journal, const std::string& xml)
@@ -443,11 +473,21 @@ void Add(XmlNode& added)
 {
     if (!added.doc || !doc_map[added.doc]->JRNL) return;
 
+    std::string timestamp = CurrentIsoTimestampUTC();
+
+    xmlChar* path = xmlGetNodePath(added.node);
+    xmlChar* escPath = xmlEncodeSpecialChars(added.doc, path);
+
     std::string xml =
-        std::string("<Change Type=\"Add\"><TimeStamp/>") + 
-        "<XPathLoc Type=\"Self\">" + 
-        reinterpret_cast<const char*>(xmlEncodeSpecialChars(added.doc, xmlGetNodePath(added.node))) + 
-        "</XPathLoc><Reversed TimeStamp=\"\" Value=\"false\"/></Change>";
+        std::string("<Change Type=\"Add\" TimeStamp=\"") + timestamp + "\">"
+        "<XPathLoc Type=\"Self\">" +
+        reinterpret_cast<const char*>(escPath) +
+        "</XPathLoc>"
+        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
+        "</Change>";
+
+    if (escPath) xmlFree(escPath);
+    if (path) xmlFree(path);
 
     Log(doc_map[added.doc]->JRNL, xml);
 }
@@ -456,13 +496,22 @@ void Modify(XmlNode& node, const std::string& oldXML)
 {
     if (!node.doc || !doc_map[node.doc]->JRNL) return;
 
+    std::string timestamp = CurrentIsoTimestampUTC();
+
+    xmlChar* path = xmlGetNodePath(node.node);
+    xmlChar* escPath = xmlEncodeSpecialChars(node.doc, path);
+
     std::string xml =
-        std::string("<Change Type=\"Modify\"><TimeStamp/><XPathLoc Type=\"Self\">") + 
-        reinterpret_cast<const char*>(xmlEncodeSpecialChars(node.doc, xmlGetNodePath(node.node))) + 
+        std::string("<Change Type=\"Modify\" TimeStamp=\"") + timestamp + "\">"
+        "<XPathLoc Type=\"Self\">" +
+        reinterpret_cast<const char*>(escPath) +
         "</XPathLoc>"
         "<Node Encoding=\"Base64\">" + base64_encode(oldXML) + "</Node>"
         "<Reversed TimeStamp=\"\" Value=\"false\"/>"
         "</Change>";
+
+    if (escPath) xmlFree(escPath);
+    if (path) xmlFree(path);
 
     Log(doc_map[node.doc]->JRNL, xml);
 }

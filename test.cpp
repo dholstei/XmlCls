@@ -169,6 +169,7 @@ void test_parse_replace_node()
     CHECK_EQ(doc.XPath<int>("count(/Root/Old)"), 0);
     CHECK_EQ(doc.XPath<int>("count(/Root/New)"), 1);
     CHECK_EQ(doc.XPath<std::string>("string(/Root/New)"), std::string("new"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("New"));
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("Tail"));
 }
 
@@ -241,7 +242,7 @@ void test_journal_helpers()
     print_xml("source after AddChild(<B/>)", doc);
     print_xml("journal after JRNL::Add(B)", doc.JRNL);
 
-    std::string old = b.XML();
+    std::string old = std::string(b);
     b.parse("<B changed=\"true\"/>");
     JRNL::Modify(b, old);
     print_xml("source after parse(<B changed=\"true\"/>)", doc);
@@ -260,6 +261,18 @@ void test_journal_helpers()
     CHECK_EQ(journal.XPath<std::string>("string(/JRNL/Change[1]/@Type)"), std::string("Add"));
     CHECK_EQ(journal.XPath<std::string>("string(/JRNL/Change[2]/@Type)"), std::string("Modify"));
     CHECK_EQ(journal.XPath<std::string>("string(/JRNL/Change[3]/@Type)"), std::string("Deletion"));
+
+    // Journal entries should carry a timestamp attribute on <Change>,
+    // not an empty child node such as <TimeStamp/>.
+    CHECK_EQ(journal.XPath<int>("count(/JRNL/Change/TimeStamp)"), 0);
+    CHECK_EQ(journal.XPath<int>("count(/JRNL/Change[@TimeStamp and string-length(@TimeStamp) > 0])"), 3);
+    CHECK_EQ(journal.XPath<bool>("boolean(/JRNL/Change[2][@Type='Modify'][@TimeStamp])"), true);
+
+    const std::string modifyTimestamp =
+        journal.XPath<std::string>("string(/JRNL/Change[2]/@TimeStamp)");
+    CHECK(!modifyTimestamp.empty());
+    CHECK(modifyTimestamp.find('T') != std::string::npos);
+    CHECK(modifyTimestamp.back() == 'Z');
 
     std::remove(path);
 }
