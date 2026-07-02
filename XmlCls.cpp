@@ -2,7 +2,8 @@
 #include "base64.h"
 
 std::mutex doc_map_mtx;
-std::map<xmlDocPtr, XmlDoc*> doc_map, jrnl_map;
+std::map<xmlDocPtr, XmlDoc*> doc_map;
+std::map<xmlDocPtr, XmlJrnl*> jrnl_map;
 
 #define XML_ERROR(T, data) \
     do { \
@@ -22,6 +23,22 @@ Error* SetXmlError(const std::string& context) {
     err->level = ERR;
     err->data = context;
     return err;
+}
+
+static std::string CurrentIsoTimestampUTC()
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+
+#ifdef _WIN32
+    gmtime_s(&tm, &now);
+#else
+    gmtime_r(&now, &tm);
+#endif
+
+    char buffer[32]{};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buffer;
 }
 
 XmlDoc::XmlDoc(const char *filename)
@@ -68,6 +85,38 @@ void XmlDoc::Save() {
 XmlDoc::~XmlDoc()
 {
     clear();
+}
+
+void XmlDoc::OpenJournal(const char* filename) {
+    JRNL = new XmlJrnl(filename);
+    if (!JRNL->doc) { delete JRNL; JRNL = nullptr; }
+    jrnl_map[doc] = JRNL;
+}
+
+void XmlDoc::CreateJournal(const char* filename, std::string XML) {
+    char* seed = "<JRNL>\
+  <Release Number=\"0\" Open=\"%s\" Close=\"\">\
+    <Release Number=\"1\" Open=\"%s\" Close=\"\">\
+    </Release>\
+  </Release>\
+</JRNL>";
+    if (XML.empty()) {
+        char buf[1024];
+        snprintf(buf, sizeof(buf), seed, CurrentIsoTimestampUTC().c_str(), CurrentIsoTimestampUTC().c_str());
+        XML = std::string(buf);
+    }
+    JRNL = new XmlJrnl(XML.c_str(), XML.length());
+    jrnl_map[doc] = JRNL;
+}
+
+void XmlDoc::clear() {
+    if (doc) {
+        if (JRNL) { JRNL->Save(); delete JRNL; JRNL = nullptr; }
+        auto it = doc_map.find(doc);
+        if (it != doc_map.end()) doc_map.erase(it);
+        // xmlFreeDoc(doc);
+        doc = nullptr;
+    }
 }
 
 template <>
@@ -443,22 +492,6 @@ XmlNode XmlNode::AddAfter(std::string XmlStr)
     return XmlNode(added);
 }
 
-static std::string CurrentIsoTimestampUTC()
-{
-    std::time_t now = std::time(nullptr);
-    std::tm tm{};
-
-#ifdef _WIN32
-    gmtime_s(&tm, &now);
-#else
-    gmtime_r(&now, &tm);
-#endif
-
-    char buffer[32]{};
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
-    return buffer;
-}
-
 namespace JRNL {
 
 inline void Log(XmlDoc* journal, const std::string& xml)
@@ -549,4 +582,37 @@ void Delete(XmlNode& node)
     Log(doc_map[node.doc]->JRNL, xml);
 }
 
+}
+
+
+void XmlJrnl::LogAdd(XmlNode& added) {}
+void XmlJrnl::LogModify(XmlNode& node, const std::string& oldXML) {}
+void XmlJrnl::LogDelete(XmlNode& node) {}
+
+void XmlJrnl::Undo(XmlNode action_node) {}
+void XmlJrnl::RefreshActiveRelease()
+{
+    rel_no.clear();
+    active_release = XmlNode();
+
+    auto roots = XPath<std::vector<XmlNode>>("/JRNL/Release[@Close='']");
+    if (roots.empty()) {
+        err = new Error{lvl::ERR, "No open root Release in journal", ""};
+        return;
+    }
+
+    active_release = FindActiveRelease(roots.back(), rel_no);
+}
+
+XmlNode XmlJrnl::FindActiveRelease(XmlNode current, std::vector<int>& path)
+{
+    int n = current.XPath<int>("number(@Number)");
+    path.push_back(n);
+
+    auto children = current.XPath<std::vector<XmlNode>>("./Release[@Close='']");
+
+    if (children.empty())
+        return current;
+
+    return FindActiveRelease(children.back(), path);
 }

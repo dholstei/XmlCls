@@ -35,8 +35,11 @@ typedef Error* ErrorPtr;
 #include "base64.h"
 
 class EXPORT XmlDoc;    // Forward declaration for doc_map
+class EXPORT XmlJrnl;
+class EXPORT XmlNode;
 extern std::mutex doc_map_mtx;
 extern std::map<xmlDocPtr, XmlDoc*> doc_map;
+extern std::map<xmlDocPtr, XmlJrnl*> jrnl_map;
 
 /**
 * @class XmlDoc
@@ -56,7 +59,7 @@ class EXPORT XmlDoc
 public:
     ErrorPtr err = nullptr;
     xmlXPathContextPtr ctxt = nullptr;
-    XmlDoc* JRNL = nullptr;
+    XmlJrnl* JRNL = nullptr;
     mutable std::recursive_mutex mtx;
 
     XmlDoc() {}
@@ -146,31 +149,14 @@ public:
     */
     template <typename T> T XPath(std::string query);
 
-    void OpenJournal(const char* filename) {
-        JRNL = new XmlDoc(filename);
-        if (!JRNL->doc) {
-            delete JRNL;
-            JRNL = nullptr;
-        }
-    }
+    void OpenJournal(const char* filename);
 
-    void CreateJournal(const char* filename) {
-        JRNL = new XmlDoc("<JRNL/>", 7);
-        JRNL->Save(filename);
-    }
+    void CreateJournal(const char* filename, std::string XML = "");
 
 private:
     xmlDocPtr doc = nullptr;
 
-    void clear() {
-        if (doc) {
-            if (JRNL) { JRNL->Save(); delete JRNL; JRNL = nullptr; }
-            auto it = doc_map.find(doc);
-            if (it != doc_map.end()) doc_map.erase(it);
-            // xmlFreeDoc(doc);
-            doc = nullptr;
-        }
-    }
+    void clear() ;
 };
 
 class EXPORT XmlNode
@@ -182,6 +168,7 @@ public:
     xmlNodePtr node = nullptr;
     ErrorPtr err = nullptr;
     xmlXPathContextPtr ctxt = nullptr;
+    XmlJrnl* JRNL = nullptr;
 
     XmlNode() {}
 
@@ -190,9 +177,14 @@ public:
     * @param node Pointer to the existing xmlNodePtr.
     */
     XmlNode(xmlNodePtr node) {
-        if (!node) return;
+        if (!node) { err = new Error{lvl::ERR, "Invalid/NULL node pointer", ""}; return; }
         this->node = node;
         doc = node ? node->doc : nullptr;
+        if (doc) {
+            auto it = jrnl_map.find(doc);
+            if (it != jrnl_map.end()) JRNL = it->second;
+        }
+        else { err = new Error{lvl::ERR, "Node has no associated document", ""}; }
     }
     ~XmlNode(){}
     
@@ -301,3 +293,26 @@ namespace JRNL {
     void Delete(XmlNode& node);
     void Modify(XmlNode& node, const std::string& oldXML);
 }
+
+class EXPORT XmlJrnl : public XmlDoc
+{
+public:
+    using XmlDoc::XmlDoc;
+
+    std::vector<int> rel_no;      // e.g. {0, 2, 1} => Release 0.2.1
+    XmlNode active_release;       // deepest open Release node
+
+    void OpenJournal(const char*) = delete;
+    void CreateJournal(const char*, std::string) = delete;
+
+    void LogAdd(XmlNode& added);
+    void LogModify(XmlNode& node, const std::string& oldXML);
+    void LogDelete(XmlNode& node);
+
+    void Undo(XmlNode action_node);
+    void RefreshActiveRelease();
+    // std::string ReleaseString() const;
+
+private:
+    XmlNode FindActiveRelease(XmlNode start, std::vector<int>& path);
+};
