@@ -7,6 +7,7 @@ Key characteristics:
 - No exception throwing; all failures are reported through an explicit `Error` structure.
 - RAII‑style management of `libxml2` objects (`xmlDocPtr`, `xmlNodePtr`, `xmlXPathContextPtr`).
 - Strongly‑typed XPath accessors using templates.
+- Optional XML mutation journaling through `XmlJrnl`.
 - Minimal policy assumptions, making it suitable for console, GUI, embedded‑host, or service environments.
 
 The design aligns well with systems that require deterministic behavior, auditability, and predictable error handling.
@@ -95,17 +96,78 @@ Represents a single XML node associated with an owning `XmlDoc`. Provides scoped
 
 ---
 
+### Class: `XmlJrnl`
+
+**Purpose**  
+Extends `XmlDoc` with an XML-based mutation journal for tracking reversible changes to another XML document.
+
+A journal is organized as nested `<Release>` nodes. Mutations are appended beneath the deepest currently open release. The active release path is retained as a vector of integers; for example `{0, 2, 1}` represents Release `0.2.1`.
+
+**Key Members**
+- `std::vector<int> rel_no` – Numeric path of the active release.
+- `XmlNode active_release` – Deepest currently open `<Release>` node.
+
+**Construction**
+- `XmlJrnl(const char* filename)`  
+  Opens an existing journal file and resolves its active release.
+
+- `XmlJrnl(const std::string content)`  
+  Constructs a journal from XML text and resolves its active release.
+
+`OpenJournal()` and `CreateJournal()` are deleted for `XmlJrnl` itself so that journals cannot recursively journal journals.
+
+**Mutation Logging**
+- `LogAdd(XmlNode& added)`  
+  Records addition of a node.
+
+- `LogModify(XmlNode& node, const std::string& oldXML)`  
+  Records modification of a node, preserving the previous XML representation so the change can be reversed.
+
+- `LogDelete(XmlNode& node)`  
+  Records deletion of a node. This must occur before the underlying `xmlNodePtr` is unlinked or freed so its path and XML content remain available.
+
+Mutation records are written beneath `active_release` and include a UTC timestamp plus information identifying the affected XML location. `XmlNode::GetPath()` uses `xmlGetNodePath()` to provide the node's XPath within the document.
+
+**Release Management**
+- `RefreshActiveRelease()`  
+  Re-scans the journal and selects the deepest nested release whose `Close` attribute is empty.
+
+- `FindActiveRelease(XmlNode start, std::vector<int>& path)`  
+  Recursively walks open nested releases while building `rel_no`.
+
+**Undo**
+- `Undo(XmlNode action_node)`  
+  Applies the inverse of a previously recorded mutation.
+
 ### XPath Result Conversion
 
 **Purpose**  
 Provide strongly typed access to XPath results while centralizing conversion logic.
 
-Supported conversions typically include:
-- `int`, `double`
-- `std::string`
-- `std::vector<XmlNode>`
+`XmlDoc::XPath<T>()` and `XmlNode::XPath<T>()` use the requested C++ template type to select the corresponding libxml2 XPath result conversion.
 
-Invalid conversions or empty result sets populate the `Error` state instead of throwing.
+Supported conversions include:
+- `std::string` for XPath string results
+- `double` for XPath numeric results
+- `int` for numeric results converted to integer
+- `bool` for XPath boolean results
+- `std::vector<XmlNode>` for XPath node sets
+
+Typical usage:
+
+```cpp
+std::string name = doc.XPath<std::string>("string(/Config/@Name)");
+double voltage   = doc.XPath<double>("number(/Config/@Voltage)");
+int count        = doc.XPath<int>("count(/Config/Item)");
+bool enabled     = doc.XPath<bool>("boolean(/Config/@Enabled)");
+auto nodes       = doc.XPath<std::vector<XmlNode>>("/Config/Item");
+```
+
+The conversion is implicit in the sense that callers specify only the desired C++ result type; the XPath implementation performs the libxml2 result-type extraction and C++ conversion internally.
+
+For node sets, the returned `XmlNode` objects are lightweight wrappers around nodes owned by the source document. They retain association with the source document and, when journaling is enabled, inherit the document's active `XmlJrnl`.
+
+Invalid conversions, malformed expressions, or incompatible XPath result types populate the `Error` state instead of throwing.
 
 ## Usage Example
 
@@ -113,10 +175,13 @@ Invalid conversions or empty result sets populate the `Error` state instead of t
 XmlDoc doc("config.xml");
 HANDLE_ERR(doc.err);
 
-std::vector<XmlNode> root = (doc.XPath<std::vector<XmlNode>>("/Config"))[0];
+XmlNode root = doc.XPath<std::vector<XmlNode>>("/Config")[0];
 HANDLE_ERR(root.err);
 
 int rate = root.XPath<int>("number(@Rate)");
+bool enabled = root.XPath<bool>("boolean(@Enabled)");
+std::string name = root.XPath<std::string>("string(@Name)");
+
 HANDLE_ERR(root.err);
 ```
 
