@@ -14,14 +14,7 @@
 #include <libxml/xmlerror.h>
 #include <mutex>
 
-#ifdef _WIN32
-#   define NOMINMAX
-#   include <windows.h>
-#   define EXPORT __declspec(dllexport)
-#else
-#   define EXPORT
-#   include "string.h"
-#endif
+#include "string.h"
 
 /**
 * @struct Error
@@ -34,9 +27,9 @@
 typedef Error* ErrorPtr;
 #include "base64.h"
 
-class EXPORT XmlDoc;    // Forward declaration for doc_map
-class EXPORT XmlJrnl;
-class EXPORT XmlNode;
+class XmlDoc;    // Forward declaration for doc_map
+class XmlJrnl;
+class XmlNode;
 extern std::mutex doc_map_mtx;
 extern std::map<xmlDocPtr, XmlDoc*> doc_map;
 extern std::map<xmlDocPtr, XmlJrnl*> jrnl_map;
@@ -53,7 +46,7 @@ extern std::map<xmlDocPtr, XmlJrnl*> jrnl_map;
 * - All failures are reported through the @ref err member
 * - XPath contexts are cached per document
 */
-class EXPORT XmlDoc
+class XmlDoc
 {
 
 public:
@@ -100,7 +93,7 @@ public:
     * @param content Pointer to XML text.
     * @param length Size of the buffer in bytes.
     */
-    XmlDoc(const char *content, int length);
+    XmlDoc(const std::string content);
 
    /**
     * @brief Destructor.
@@ -159,7 +152,7 @@ private:
     void clear() ;
 };
 
-class EXPORT XmlNode
+class XmlNode
 {
 private:
     /* data */
@@ -258,23 +251,19 @@ public:
     /**
      * @brief Remove this node from the XML tree and invalidate the wrapper.
      */
-    void Delete()
-    {
-        if (!node) return;
+    void Delete();
 
-        xmlNodePtr doomed = node;
+    std::string GetPath() const {
+        if (!node) return {};
 
-        // Invalidate this wrapper immediately
-        node = nullptr;
-        doc  = nullptr;
-        ctxt = nullptr;
+        xmlChar* path = xmlGetNodePath(node);
+        if (!path) return {};
 
-        // Remove from tree
-        xmlUnlinkNode(doomed);
-
-        // Free subtree
-        xmlFreeNode(doomed);
+        std::string result(reinterpret_cast<const char*>(path));
+        xmlFree(path);
+        return result;
     }
+
 /**
     * @brief Evaluate an XPath expression relative to this node.
     * @tparam T Desired return type.
@@ -288,19 +277,14 @@ public:
 
 xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err);
 
-namespace JRNL {
-    void Add(XmlNode& added);
-    void Delete(XmlNode& node);
-    void Modify(XmlNode& node, const std::string& oldXML);
-}
-
-class EXPORT XmlJrnl : public XmlDoc
+class XmlJrnl : public XmlDoc
 {
 public:
-    using XmlDoc::XmlDoc;
-
     std::vector<int> rel_no;      // e.g. {0, 2, 1} => Release 0.2.1
     XmlNode active_release;       // deepest open Release node
+
+    XmlJrnl(const char *filename);
+    XmlJrnl(const std::string content);
 
     void OpenJournal(const char*) = delete;
     void CreateJournal(const char*, std::string) = delete;

@@ -52,14 +52,15 @@ XmlDoc::XmlDoc(const char *filename)
     doc_map[doc] = this;
 }
 
-XmlDoc::XmlDoc(const char *content, int length)
+XmlDoc::XmlDoc(const std::string content)
 {
-    doc = xmlReadMemory(content, length, "noname.xml", NULL, XML_PARSE_NOBLANKS);
+    doc = xmlReadMemory(content.c_str(), content.length(), "noname.xml", NULL, XML_PARSE_NOBLANKS);
     if (doc == NULL)
     {
         xmlError e = *xmlGetLastError();
         err = new Error{lvl::ERR, e.message, std::string(e.str1)};
         xmlResetLastError();
+        return;
     }
     doc_map[doc] = this;
 }
@@ -105,7 +106,7 @@ void XmlDoc::CreateJournal(const char* filename, std::string XML) {
         snprintf(buf, sizeof(buf), seed, CurrentIsoTimestampUTC().c_str(), CurrentIsoTimestampUTC().c_str());
         XML = std::string(buf);
     }
-    JRNL = new XmlJrnl(XML.c_str(), XML.length());
+    JRNL = new XmlJrnl(XML);
     jrnl_map[doc] = JRNL;
 }
 
@@ -125,19 +126,32 @@ std::string XmlDoc::XPath<std::string>(std::string query)
     ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::string, query);
+    std::string ans;
 
     if (result->type == XPATH_STRING)
+        ans = std::string((const char *)result->stringval);
+
+    else if (result->type == XPATH_NODESET)
     {
-        std::string ans = std::string((const char *)result->stringval);
-        xmlXPathFreeObject(result);
-        return ans;
+        auto NL = result->nodesetval;
+        if (NL->nodeNr != 1) {
+            err = new Error{lvl::ERR, "No single node, not compatible for \"std::string\" type", query};
+            xmlXPathFreeObject(result); return ans; }
+        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "string(.)", ctxt);
+
+        if (result->type != XPATH_STRING)
+            err = new Error{lvl::ERR, "Couldn't determine intermediate string for \"std::string\" type", query};
+
+        else ans = std::string((const char *)result->stringval);
     }
+
     else
     {
         xmlXPathFreeObject(result);
         err = new Error{lvl::ERR, "Result type is not \"string\"", query};
     }
-    return std::string();
+    xmlXPathFreeObject(result);
+    return ans;
 }
 
 template <>
@@ -154,7 +168,26 @@ double XmlDoc::XPath<double>(std::string query)
         else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
         else ans = result->floatval;
     }
-    else err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
+    
+    else if (result->type == XPATH_NODESET)
+    {
+        auto NL = result->nodesetval;
+        if (NL->nodeNr != 1) {
+            err = new Error{lvl::ERR, "No single node, not compatible for \"double\" type", query};
+            xmlXPathFreeObject(result); return ans; }
+        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "number(.)", ctxt);
+
+        if (result->type != XPATH_NUMBER) {
+            err = new Error{lvl::ERR, "Couldn't determine number for \"double\" type", query};
+            xmlXPathFreeObject(result); return ans; }
+
+        if (xmlXPathIsNaN(result->floatval)) err = new Error{lvl::ERR, "Result is NaN!", query};
+        else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
+        else ans = result->floatval;
+    }
+
+    else
+        err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
     
     xmlXPathFreeObject(result);
     return ans;
@@ -185,6 +218,21 @@ bool XmlDoc::XPath<bool>(std::string query)
         xmlXPathFreeObject(result);
         return ans;
     }
+    
+    else if (result->type == XPATH_NODESET)
+    {
+        auto NL = result->nodesetval;
+        if (NL->nodeNr != 1) {
+            err = new Error{lvl::ERR, "No single node, not compatible for \"boolean\" type", query};
+            xmlXPathFreeObject(result); return false; }
+        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "boolean(.)", ctxt);
+
+        if (result->type != XPATH_BOOLEAN) {
+            err = new Error{lvl::ERR, "Couldn't determine boolean for \"boolean\" type", query};
+            xmlXPathFreeObject(result); return false; }
+        else { xmlXPathFreeObject(result); return result->boolval; }
+    }
+
     else
     {
         xmlXPathFreeObject(result);
@@ -258,19 +306,30 @@ std::string XmlNode::XPath<std::string>(std::string query)
     ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(std::string, query);
+    std::string ans;
 
     if (result->type == XPATH_STRING)
+        ans = std::string((const char *)result->stringval);
+
+    else if (result->type == XPATH_NODESET)
     {
-        std::string ans = std::string((const char *)result->stringval);
-        xmlXPathFreeObject(result);
-        return ans;
+        auto NL = result->nodesetval;
+        if (NL->nodeNr != 1) {
+            err = new Error{lvl::ERR, "No single node, not compatible for \"std::string\" type", query};
+            xmlXPathFreeObject(result); return ans; }
+        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "string(.)", ctxt);
+
+        if (result->type != XPATH_STRING)
+            err = new Error{lvl::ERR, "Couldn't determine intermediate string for \"std::string\" type", query};
+
+        else ans = std::string((const char *)result->stringval);
     }
+    
     else
-    {
-        xmlXPathFreeObject(result);
         err = new Error{lvl::ERR, "Result type is not \"string\"", query};
-    }
-    return std::string();
+
+    xmlXPathFreeObject(result);
+    return ans;
 }
 
 template <>
@@ -287,7 +346,26 @@ double XmlNode::XPath<double>(std::string query)
         else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
         else ans = result->floatval;
     }
-    else err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
+    
+    else if (result->type == XPATH_NODESET)
+    {
+        auto NL = result->nodesetval;
+        if (NL->nodeNr != 1) {
+            err = new Error{lvl::ERR, "No single node, not compatible for \"double\" type", query};
+            xmlXPathFreeObject(result); return ans; }
+        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "number(.)", ctxt);
+
+        if (result->type != XPATH_NUMBER) {
+            err = new Error{lvl::ERR, "Couldn't determine number for \"double\" type", query};
+            xmlXPathFreeObject(result); return ans; }
+
+        if (xmlXPathIsNaN(result->floatval)) err = new Error{lvl::ERR, "Result is NaN!", query};
+        else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
+        else ans = result->floatval;
+    }
+
+    else
+        err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
     
     xmlXPathFreeObject(result);
     return ans;
@@ -311,19 +389,31 @@ bool XmlNode::XPath<bool>(std::string query)
     ctxt = GetXPathContext(doc, err);
     xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
     if (result == nullptr) XML_ERROR(bool, query);
+    bool ans = false;
 
     if (result->type == XPATH_BOOLEAN)
+        ans = result->boolval;
+    
+    else if (result->type == XPATH_NODESET)
     {
-        bool ans = result->boolval;
+        auto NL = result->nodesetval;
+        if (NL->nodeNr != 1) {
+            err = new Error{lvl::ERR, "No single node, not compatible for \"boolean\" type", query};
+            xmlXPathFreeObject(result); return false; }
+        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "boolean(.)", ctxt);
+
+        if (result->type != XPATH_BOOLEAN) {
+            err = new Error{lvl::ERR, "Couldn't determine boolean for \"boolean\" type", query};
+            xmlXPathFreeObject(result); return false; }
+        else
+            ans = result->boolval;
+    }
+
+    else
+        err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
+        
         xmlXPathFreeObject(result);
         return ans;
-    }
-    else
-    {
-        xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
-    }
-    return false;
 }
 
 template <>
@@ -383,7 +473,7 @@ void XmlNode::parse(std::string XML)
 
     xmlNodePtr oldNode = node;
 
-    JRNL::Modify(*this, oldNode ? this->XML() : std::string());
+    if (JRNL) JRNL->LogModify(*this, oldNode ? this->XML() : std::string());
 
     xmlReplaceNode(oldNode, imported);
     xmlFreeNode(oldNode);
@@ -441,7 +531,12 @@ XmlNode XmlNode::AddChild(std::string XmlStr)
         return XmlNode();
     }
 
-    return XmlNode(added);
+    XmlNode result(added);
+
+    if (JRNL)
+        JRNL->LogAdd(result);
+
+    return result;
 }
 
 XmlNode XmlNode::AddBefore(std::string XmlStr)
@@ -465,7 +560,12 @@ XmlNode XmlNode::AddBefore(std::string XmlStr)
         return XmlNode();
     }
 
-    return XmlNode(added);
+    XmlNode result(added);
+
+    if (JRNL)
+        JRNL->LogAdd(result);
+
+    return result;
 }
 
 XmlNode XmlNode::AddAfter(std::string XmlStr)
@@ -489,105 +589,69 @@ XmlNode XmlNode::AddAfter(std::string XmlStr)
         return XmlNode();
     }
 
-    return XmlNode(added);
+    XmlNode result(added);
+
+    if (JRNL)
+        JRNL->LogAdd(result);
+
+    return result;
 }
 
-namespace JRNL {
-
-inline void Log(XmlDoc* journal, const std::string& xml)
+void XmlNode::Delete()
 {
-    if (!journal) return;
-    auto root = journal->XPath<std::vector<XmlNode>>("/*");
-    if (root.empty()) return;
-    root[0].AddChild(xml);
+    if (!node) return;
+
+    if (JRNL)
+        JRNL->LogDelete(*this);
+
+    xmlNodePtr doomed = node;
+
+    node = nullptr;
+    doc  = nullptr;
+    ctxt = nullptr;
+    JRNL = nullptr;
+
+    xmlUnlinkNode(doomed);
+    xmlFreeNode(doomed);
 }
 
-void Add(XmlNode& added)
-{
-    if (!added.doc || !doc_map[added.doc]->JRNL) return;
+XmlJrnl::XmlJrnl(const char* filename): XmlDoc(filename)
+    { if (!err) RefreshActiveRelease(); }
 
-    std::string timestamp = CurrentIsoTimestampUTC();
+XmlJrnl::XmlJrnl(const std::string content) : XmlDoc(content)
+    { if (!err) RefreshActiveRelease(); }
 
-    xmlChar* path = xmlGetNodePath(added.node);
-    xmlChar* escPath = xmlEncodeSpecialChars(added.doc, path);
+void XmlJrnl::LogAdd(XmlNode& added) {
+    if (!active_release.node || !added.node) return;
 
-    std::string xml =
-        std::string("<Change Type=\"Add\" TimeStamp=\"") + timestamp + "\">"
-        "<XPathLoc Type=\"Self\">" +
-        reinterpret_cast<const char*>(escPath) +
-        "</XPathLoc>"
-        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
-        "</Change>";
+    std::string change =
+        "\n<Change Type=\"Add\" TimeStamp=\"" + CurrentIsoTimestampUTC() + "\">"
+        "<XPathLoc>" + added.GetPath() + "</XPathLoc>\n</Change>\n";
 
-    if (escPath) xmlFree(escPath);
-    if (path) xmlFree(path);
-
-    Log(doc_map[added.doc]->JRNL, xml);
+    active_release.AddChild(change);
 }
 
-void Modify(XmlNode& node, const std::string& oldXML)
-{
-    if (!node.doc || !doc_map[node.doc]->JRNL) return;
+void XmlJrnl::LogModify(XmlNode& node, const std::string& oldXML) {
 
-    std::string timestamp = CurrentIsoTimestampUTC();
+    if (!active_release.node || !node.node) return;
 
-    xmlChar* path = xmlGetNodePath(node.node);
-    xmlChar* escPath = xmlEncodeSpecialChars(node.doc, path);
+    std::string change =
+        "\n<Change Type=\"Modify\" TimeStamp=\"" +
+        CurrentIsoTimestampUTC() + "\">"
+        "<XPathLoc>" + node.GetPath() + "</XPathLoc>\n</Change>\n";
 
-    std::string xml =
-        std::string("<Change Type=\"Modify\" TimeStamp=\"") + timestamp + "\">"
-        "<XPathLoc Type=\"Self\">" +
-        reinterpret_cast<const char*>(escPath) +
-        "</XPathLoc>"
-        "<Node Encoding=\"Base64\">" + base64_encode(oldXML) + "</Node>"
-        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
-        "</Change>";
-
-    if (escPath) xmlFree(escPath);
-    if (path) xmlFree(path);
-
-    Log(doc_map[node.doc]->JRNL, xml);
+    active_release.AddChild(change);
 }
+void XmlJrnl::LogDelete(XmlNode& node) {
+    if (!active_release.node || !node.node) return;
 
-void Delete(XmlNode& node)
-{
-    if (!node.doc || !doc_map[node.doc]->JRNL) return;
+    std::string change =
+        "\n<Change Type=\"Deletion\" TimeStamp=\"" +
+        CurrentIsoTimestampUTC() + "\">"
+        "<XPathLoc>" + node.GetPath() + "</XPathLoc>\n</Change>\n";
 
-    std::string oldXML = node.XML();
-
-    std::string locType;
-    std::string loc;
-
-    if (node.node->prev) {
-        locType = "SiblingAfter";
-        loc = reinterpret_cast<const char*>(xmlGetNodePath(node.node->prev));
-    }
-    else if (node.node->next) {
-        locType = "SiblingBefore";
-        loc = reinterpret_cast<const char*>(xmlGetNodePath(node.node->next));
-    }
-    else {
-        locType = "Child";
-        loc = reinterpret_cast<const char*>(xmlGetNodePath(node.node->parent));
-    }
-
-    std::string xml =
-        std::string("<Change Type=\"Deletion\"><TimeStamp/>") +
-        "<XPathLoc Type=\"" + locType + "\">" + 
-        reinterpret_cast<const char*>(xmlEncodeSpecialChars(node.doc, BAD_CAST loc.c_str())) + 
-        "</XPathLoc>" +
-        "<Node Encoding=\"Base64\">" + base64_encode(oldXML) + "</Node>" +
-        "<Reversed TimeStamp=\"\" Value=\"false\"/></Change>";
-
-    Log(doc_map[node.doc]->JRNL, xml);
+    active_release.AddChild(change);
 }
-
-}
-
-
-void XmlJrnl::LogAdd(XmlNode& added) {}
-void XmlJrnl::LogModify(XmlNode& node, const std::string& oldXML) {}
-void XmlJrnl::LogDelete(XmlNode& node) {}
 
 void XmlJrnl::Undo(XmlNode action_node) {}
 void XmlJrnl::RefreshActiveRelease()

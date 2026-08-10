@@ -11,16 +11,16 @@
  * ./test_xmlcls
  * @endcode
  *
- * These tests intentionally exercise the newest DOM mutation methods:
+ * These tests exercise the DOM mutation methods:
  * XmlNode::AddChild(), AddBefore(), AddAfter(), parse(), Delete(), and the
- * XmlDoc journal helpers.  They also verify that XPath evaluation still works
- * after each mutation.
+ * journal-aware XmlNode behavior.  Tests intentionally call XmlDoc::CreateJournal()
+ * immediately after XmlDoc construction when journaling is expected.
  */
 
 #include "XmlCls.h"
 
 #include <cstdlib>
-#include <fstream>
+#include <cstdio>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -75,13 +75,13 @@ void banner(const std::string& title)
     std::cout << "\n========== " << title << " ==========\n";
 }
 
-void print_xml(const std::string& label, XmlDoc& doc)
+void print_xml(const std::string& label, const XmlDoc& doc)
 {
     std::cout << "\n--- " << label << " ---\n";
     std::cout << doc.XML() << '\n';
 }
 
-void print_xml(const std::string& label, XmlDoc* doc)
+void print_xml(const std::string& label, const XmlDoc* doc)
 {
     std::cout << "\n--- " << label << " ---\n";
     if (doc) std::cout << doc->XML() << '\n';
@@ -101,20 +101,20 @@ void test_document_xpath()
 {
     banner("document XPath");
 
-    static const char xml[] =
+    static const std::string xml =
         "<Root>"
         "  <Item Name=\"alpha\" Value=\"10\">A</Item>"
         "  <Item Name=\"beta\"  Value=\"20\">B</Item>"
         "</Root>";
 
-    XmlDoc doc(xml, static_cast<int>(sizeof(xml) - 1));
+    XmlDoc doc(xml);
     CHECK(!doc.err);
     print_xml("source XML", doc);
 
-    CHECK_EQ(doc.XPath<std::string>("string(/Root/Item[@Name='alpha'])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("/Root/Item[@Name='alpha']"), std::string("A"));
     CHECK_EQ(doc.XPath<int>("count(/Root/Item)"), 2);
-    CHECK_EQ(doc.XPath<double>("number(/Root/Item[@Name='beta']/@Value)"), 20.0);
-    CHECK_EQ(doc.XPath<bool>("boolean(/Root/Item[@Name='beta'])"), true);
+    CHECK_EQ(doc.XPath<double>("/Root/Item[@Name='beta']/@Value"), 20.0);
+    CHECK_EQ(doc.XPath<bool>("/Root/Item[@Name='beta']"), true);
 
     auto items = doc.XPath<std::vector<XmlNode>>("/Root/Item");
     CHECK_EQ(items.size(), std::size_t{2});
@@ -124,7 +124,7 @@ void test_add_child_before_after_and_vectors()
 {
     banner("AddChild / AddBefore / AddAfter / vector overloads");
 
-    XmlDoc doc("<Root><A id=\"1\"/></Root>", 25);
+    XmlDoc doc(std::string("<Root><A id=\"1\"/></Root>"));
     CHECK(!doc.err);
     print_xml("before mutations", doc);
 
@@ -133,7 +133,7 @@ void test_add_child_before_after_and_vectors()
     print_xml("after AddChild(<B...>)", doc);
     CHECK(b.node != nullptr);
     CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 1);
-    CHECK_EQ(b.XPath<std::string>("string(./Leaf)"), std::string("ok"));
+    CHECK_EQ(b.XPath<std::string>("./Leaf"), std::string("ok"));
 
     auto a = require_nodes(doc, "/Root/A")[0];
     XmlNode before = a.AddBefore("<Before/>");
@@ -155,12 +155,12 @@ void test_parse_replace_node()
 {
     banner("parse replace node");
 
-    XmlDoc doc("<Root><Old id=\"1\">old</Old><Tail/></Root>", 43);
+    XmlDoc doc(std::string("<Root><Old id=\"1\">old</Old><Tail/></Root>"));
     CHECK(!doc.err);
     print_xml("before parse()", doc);
 
     auto old = require_nodes(doc, "/Root/Old")[0];
-    old.parse("<New id=\"2\">new</New>");
+    old.parse(std::string("<New id=\"2\">new</New>"));
     print_xml("after parse(<New...>)", doc);
     print_error("parse", old.err);
     CHECK(!old.err);
@@ -168,7 +168,7 @@ void test_parse_replace_node()
 
     CHECK_EQ(doc.XPath<int>("count(/Root/Old)"), 0);
     CHECK_EQ(doc.XPath<int>("count(/Root/New)"), 1);
-    CHECK_EQ(doc.XPath<std::string>("string(/Root/New)"), std::string("new"));
+    CHECK_EQ(doc.XPath<std::string>("/Root/New"), std::string("new"));
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("New"));
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("Tail"));
 }
@@ -177,7 +177,7 @@ void test_delete_node()
 {
     banner("Delete node");
 
-    XmlDoc doc("<Root><A/><B/><C/></Root>", 25);
+    XmlDoc doc(std::string("<Root><A/><B/><C/></Root>"));
     CHECK(!doc.err);
     print_xml("before Delete()", doc);
 
@@ -197,7 +197,7 @@ void test_save_and_reload()
 
     const char* path = "/tmp/xmlcls_test_save.xml";
 
-    XmlDoc doc("<Root><A>saved</A></Root>", 25);
+    XmlDoc doc(std::string("<Root><A>saved</A></Root>"));
     CHECK(!doc.err);
     print_xml("before Save(path)", doc);
 
@@ -216,60 +216,105 @@ void test_save_and_reload()
     XmlDoc reloaded(path);
     CHECK(!reloaded.err);
     print_xml("reloaded XML", reloaded);
-    CHECK_EQ(reloaded.XPath<std::string>("string(/Root/A)"), std::string("saved"));
-    CHECK_EQ(reloaded.XPath<std::string>("string(/Root/B)"), std::string("added"));
+    CHECK_EQ(reloaded.XPath<std::string>("/Root/A"), std::string("saved"));
+    CHECK_EQ(reloaded.XPath<std::string>("/Root/B"), std::string("added"));
 
     std::remove(path);
 }
 
-void test_journal_helpers()
+void test_xmljrnl_constructor_and_active_release()
 {
-    banner("journal helpers");
+    banner("XmlJrnl constructor / active Release branch");
+
+    static const char journal_xml[] =
+        "<JRNL>"
+        "  <Release Number=\"0\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
+        "    <Release Number=\"1\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
+        "    </Release>"
+        "  </Release>"
+        "</JRNL>";
+
+    XmlJrnl journal((std::string(journal_xml)));
+    CHECK(!journal.err);
+
+    journal.RefreshActiveRelease();
+    print_error("RefreshActiveRelease", journal.err);
+    CHECK(!journal.err);
+    CHECK(journal.active_release.node != nullptr);
+    CHECK_EQ(journal.rel_no.size(), std::size_t{2});
+    CHECK_EQ(journal.rel_no[0], 0);
+    CHECK_EQ(journal.rel_no[1], 1);
+    CHECK_EQ(journal.active_release.XPath<int>("number(@Number)"), 1);
+}
+
+void test_journal_aware_mutations()
+{
+    banner("journal-aware XmlNode mutations");
 
     const char* path = "/tmp/xmlcls_test.jrnl.xml";
 
-    XmlDoc doc("<Root><A/></Root>", 17);
+    XmlDoc doc(std::string("<Root><A/></Root>"));
     CHECK(!doc.err);
+
+    // Journaling is an explicit, immediate post-construction opt-in.
     doc.CreateJournal(path);
     CHECK(doc.JRNL != nullptr);
 
-    print_xml("source before journaled mutations", doc);
-    print_xml("journal before journaled mutations", doc.JRNL);
+    if (doc.JRNL) {
+        doc.JRNL->RefreshActiveRelease();
+        CHECK(doc.JRNL->active_release.node != nullptr);
+        CHECK_EQ(doc.JRNL->rel_no.size(), std::size_t{2});
+        CHECK_EQ(doc.JRNL->rel_no[0], 0);
+        CHECK_EQ(doc.JRNL->rel_no[1], 1);
+    }
+
+    print_xml("source before journal-aware mutations", doc);
+    print_xml("journal before journal-aware mutations", doc.JRNL);
 
     auto root = require_nodes(doc, "/Root")[0];
+    CHECK(root.JRNL == doc.JRNL);
+
     XmlNode b = root.AddChild("<B/>");
-    JRNL::Add(b);
-    print_xml("source after AddChild(<B/>)", doc);
-    print_xml("journal after JRNL::Add(B)", doc.JRNL);
+    print_xml("source after root.AddChild(<B/>)", doc);
+    print_xml("journal after automatic Add log", doc.JRNL);
+    CHECK(b.node != nullptr);
+    CHECK(b.JRNL == doc.JRNL);
 
-    std::string old = std::string(b);
     b.parse("<B changed=\"true\"/>");
-    JRNL::Modify(b, old);
-    print_xml("source after parse(<B changed=\"true\"/>)", doc);
-    print_xml("journal after JRNL::Modify(B, oldXML)", doc.JRNL);
+    print_xml("source after b.parse(<B changed=\"true\"/>)", doc);
+    print_xml("journal after automatic Modify log", doc.JRNL);
+    CHECK(b.node != nullptr);
+    CHECK(b.JRNL == doc.JRNL);
 
-    JRNL::Delete(b);
     b.Delete();
-    print_xml("source after JRNL::Delete(B), then B.Delete()", doc);
-    print_xml("journal after JRNL::Delete(B)", doc.JRNL);
+    print_xml("source after b.Delete()", doc);
+    print_xml("journal after automatic Deletion log", doc.JRNL);
+    CHECK(b.node == nullptr);
+    CHECK(b.doc == nullptr);
 
-    doc.JRNL->Save();
+    CHECK(doc.JRNL != nullptr);
+    doc.JRNL->Save(path);
+
     XmlDoc journal(path);
     CHECK(!journal.err);
     print_xml("journal reloaded from disk", journal);
-    CHECK_EQ(journal.XPath<int>("count(/JRNL/Change)"), 3);
-    CHECK_EQ(journal.XPath<std::string>("string(/JRNL/Change[1]/@Type)"), std::string("Add"));
-    CHECK_EQ(journal.XPath<std::string>("string(/JRNL/Change[2]/@Type)"), std::string("Modify"));
-    CHECK_EQ(journal.XPath<std::string>("string(/JRNL/Change[3]/@Type)"), std::string("Deletion"));
+
+    // Changes belong under the deepest open Release, not directly under /JRNL.
+    CHECK_EQ(journal.XPath<int>("count(/JRNL/Change)"), 0);
+    CHECK_EQ(journal.XPath<int>("count(/JRNL/Release/Release/Change)"), 3);
+
+    CHECK_EQ(journal.XPath<std::string>("/JRNL/Release/Release/Change[1]/@Type"), std::string("Add"));
+    CHECK_EQ(journal.XPath<std::string>("/JRNL/Release/Release/Change[2]/@Type"), std::string("Modify"));
+    CHECK_EQ(journal.XPath<std::string>("/JRNL/Release/Release/Change[3]/@Type"), std::string("Deletion"));
 
     // Journal entries should carry a timestamp attribute on <Change>,
     // not an empty child node such as <TimeStamp/>.
-    CHECK_EQ(journal.XPath<int>("count(/JRNL/Change/TimeStamp)"), 0);
-    CHECK_EQ(journal.XPath<int>("count(/JRNL/Change[@TimeStamp and string-length(@TimeStamp) > 0])"), 3);
-    CHECK_EQ(journal.XPath<bool>("boolean(/JRNL/Change[2][@Type='Modify'][@TimeStamp])"), true);
+    CHECK_EQ(journal.XPath<int>("count(//Change/TimeStamp)"), 0);
+    CHECK_EQ(journal.XPath<int>("count(//Change[@TimeStamp and string-length(@TimeStamp) > 0])"), 3);
+    CHECK_EQ(journal.XPath<bool>("//Change[2][@Type='Modify'][@TimeStamp]"), true);
 
     const std::string modifyTimestamp =
-        journal.XPath<std::string>("string(/JRNL/Change[2]/@TimeStamp)");
+        journal.XPath<std::string>("//Change[2]/@TimeStamp");
     CHECK(!modifyTimestamp.empty());
     CHECK(modifyTimestamp.find('T') != std::string::npos);
     CHECK(modifyTimestamp.back() == 'Z');
@@ -288,7 +333,8 @@ int main()
     test_parse_replace_node();
     test_delete_node();
     test_save_and_reload();
-    test_journal_helpers();
+    test_xmljrnl_constructor_and_active_release();
+    test_journal_aware_mutations();
 
     xmlCleanupParser();
 
