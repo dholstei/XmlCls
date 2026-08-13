@@ -653,7 +653,265 @@ void XmlJrnl::LogDelete(XmlNode& node) {
     active_release.AddChild(change);
 }
 
-void XmlJrnl::Undo(XmlNode action_node) {}
+void XmlJrnl::Undo() {
+    if (!active_release.node) {
+        err = new Error{ lvl::ERR, "Cannot undo: journal has no active release", "" };
+        return;
+    }
+
+    auto actions = active_release.XPath<std::vector<XmlNode>>( "./Change[Reversed/@Value='false']" );
+
+    if (active_release.err) {
+        err = active_release.err;
+        return;
+    }
+
+    Undo(actions);
+}
+void XmlJrnl::Undo(XmlNode action_node)
+{
+    if (!action_node.node) {
+        err = new Error{ lvl::ERR, "Cannot undo: invalid journal action node", "" };
+        return;
+    }
+
+    const std::string journal_path = action_node.GetPath();
+
+    /*
+     * Already reversed?
+     */
+    if (action_node.XPath<bool>( "boolean(./Reversed[@Value='true'])"))
+        return;
+
+    /*
+     * Undo is stack-oriented.  A transaction cannot be reversed while
+     * a newer transaction in the same Release remains active.
+     */
+    if (action_node.XPath<bool>( "boolean(following-sibling::Change" "[Reversed/@Value='false'])"))
+    {
+        err = new Error{ lvl::ERR, "Cannot undo transaction: incompatible later changes remain", journal_path };
+        return;
+    }
+
+    /*
+     * Locate the XmlDoc associated with this journal.
+     *
+     * jrnl_map maps source xmlDocPtr -> this XmlJrnl, while doc_map gives
+     * us the XmlDoc wrapper needed for XPath evaluation.
+     */
+    XmlDoc* target_doc = nullptr;
+
+    for (auto& [docptr, journal] : jrnl_map) {
+        if (journal != this) continue;
+
+        auto it = doc_map.find(docptr);
+        if (it != doc_map.end()) {
+            target_doc = it->second;
+            break;
+        }
+    }
+
+    if (!target_doc) {
+        err = new Error{ lvl::ERR, "Cannot undo transaction: source document is not available", journal_path };
+        return;
+    }
+
+    const std::string type = action_node.XPath<std::string>("@Type");
+
+    const std::string xpath = action_node.XPath<std::string>("./XPathLoc");
+
+    const std::string loc_type = action_node.XPath<std::string>("./XPathLoc/@Type");
+
+    if (type.empty() || xpath.empty()) {
+        err = new Error{ lvl::ERR, "Cannot undo transaction: journal entry is incomplete", journal_path };
+        return;
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Undo Add
+     *
+     * Original:
+     *      <XPathLoc Type="Self">/Root/B</XPathLoc>
+     *
+     * Undo:
+     *      remove exactly that node.
+     * ------------------------------------------------------------
+     */
+    if (type == "Add")
+    {
+        auto nodes = target_doc->XPath<std::vector<XmlNode>>(xpath);
+
+        if (nodes.size() != 1) {
+            err = new Error{ lvl::ERR, "Cannot undo Add: target node no longer uniquely exists", journal_path };
+            return;
+        }
+
+        xmlNodePtr doomed = nodes[0].node;
+
+        xmlUnlinkNode(doomed);
+        xmlFreeNode(doomed);
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Undo Modify
+     *
+     * Node contains the XML representation before the modification.
+     * Replace the current node with that saved node.
+     * ------------------------------------------------------------
+     */
+    else if (type == "Modify")
+    {
+        auto nodes = target_doc->XPath<std::vector<XmlNode>>(xpath);
+
+        if (nodes.size() != 1) {
+            err = new Error{ lvl::ERR, "Cannot undo Modify: target node no longer uniquely exists", journal_path };
+            return;
+        }
+
+        const std::string encoded = action_node.XPath<std::string>("string(./Node)");
+
+        if (encoded.empty()) {
+            err = new Error{ lvl::ERR, "Cannot undo Modify: journal contains no previous node state", journal_path };
+            return;
+        }
+
+        const std::string oldXML = base64_decode(encoded);
+
+        XmlNode& current = nodes[0];
+
+        xmlNodePtr restored = XmlNodeFromString(oldXML, current.doc, err);
+
+        if (!restored) {
+            if (!err)
+                err = new Error{ lvl::ERR, "Cannot undo Modify: saved XML cannot be restored", journal_path };
+            else
+                err->data = journal_path;
+
+            return;
+        }
+
+        xmlNodePtr old = current.node;
+
+        if (!xmlReplaceNode(old, restored)) {
+            xmlFreeNode(restored);
+
+            err = new Error{ lvl::ERR, "Cannot undo Modify: node replacement failed", journal_path };
+            return;
+        }
+
+        xmlFreeNode(old);
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Undo Deletion
+     *
+     * XPathLoc refers to an surviving anchor:
+     *
+     *   SiblingAfter  -> insert after anchor
+     *   SiblingBefore -> insert before anchor
+     *   Child         -> append beneath parent
+     * ------------------------------------------------------------
+     */
+    else if (type == "Deletion")
+    {
+        auto anchors = target_doc->XPath<std::vector<XmlNode>>(xpath);
+
+        if (anchors.size() != 1) {
+            err = new Error{ lvl::ERR, "Cannot undo Deletion: insertion anchor no longer uniquely exists", journal_path };
+            return;
+        }
+
+        const std::string encoded =
+            action_node.XPath<std::string>("string(./Node)");
+
+        if (encoded.empty()) {
+            err = new Error{ lvl::ERR, "Cannot undo Deletion: journal contains no deleted node", journal_path };
+            return;
+        }
+
+        const std::string oldXML = base64_decode(encoded);
+
+        XmlNode& anchor = anchors[0];
+
+        xmlNodePtr restored = XmlNodeFromString(oldXML, anchor.doc, err);
+
+        if (!restored) {
+            if (!err)
+                err = new Error{ lvl::ERR, "Cannot undo Deletion: saved XML cannot be restored", journal_path };
+            else
+                err->data = journal_path;
+
+            return;
+        }
+
+        xmlNodePtr inserted = nullptr;
+
+        if (loc_type == "SiblingAfter")
+            inserted = xmlAddNextSibling(anchor.node, restored);
+
+        else if (loc_type == "SiblingBefore")
+            inserted = xmlAddPrevSibling(anchor.node, restored);
+
+        else if (loc_type == "Child")
+            inserted = xmlAddChild(anchor.node, restored);
+
+        else {
+            xmlFreeNode(restored);
+
+            err = new Error{ lvl::ERR, "Cannot undo Deletion: unknown XPathLoc Type", journal_path };
+            return;
+        }
+
+        if (!inserted) {
+            xmlFreeNode(restored);
+
+            err = new Error{ lvl::ERR, "Cannot undo Deletion: node could not be reinserted", journal_path };
+            return;
+        }
+    }
+
+    else {
+        err = new Error{
+            lvl::ERR,
+            "Cannot undo transaction: unknown Change Type \"" + type + "\"",
+            journal_path
+        };
+        return;
+    }
+
+    /*
+     * Only stamp the journal after the DOM mutation succeeds.
+     *
+     * We modify the journal node directly so this bookkeeping operation
+     * cannot itself become a journal transaction.
+     */
+    auto reversed =
+        action_node.XPath<std::vector<XmlNode>>("./Reversed");
+
+    if (reversed.size() != 1) {
+        err = new Error{
+            lvl::ERR,
+            "Transaction was reversed but journal has invalid Reversed node",
+            journal_path
+        };
+        return;
+    }
+
+    xmlSetProp( reversed[0].node, BAD_CAST "Value", BAD_CAST "true" );
+
+    const std::string timestamp = CurrentIsoTimestampUTC();
+
+    xmlSetProp( reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str() );
+}
+void XmlJrnl::Undo(std::vector<XmlNode> action_nodes) {
+    for (auto it = action_nodes.rbegin(); it != action_nodes.rend(); ++it) {
+        Undo(*it);
+        if (err) return;
+    }
+}
 void XmlJrnl::RefreshActiveRelease()
 {
     rel_no.clear();

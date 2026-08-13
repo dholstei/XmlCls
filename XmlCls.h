@@ -368,12 +368,14 @@ public:
 
     /**
      * @brief Reverse a previously recorded journal action.
-     * @param action_node Change node describing the mutation to reverse.
+     * @param action_node Change node describing the mutation to reverse.  Blank means undo the most recent action.
      *
      * Interprets the journal entry and applies the inverse operation to the
      * associated document.
      */
+    void Undo();
     void Undo(XmlNode action_node);
+    void Undo(std::vector<XmlNode> action_nodes);
 
     /**
      * @brief Recalculate the currently active Release branch.

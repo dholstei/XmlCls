@@ -156,11 +156,14 @@ Supported conversions include:
 Typical usage:
 
 ```cpp
-std::string name = doc.XPath<std::string>("string(/Config/@Name)");
-double voltage   = doc.XPath<double>("number(/Config/@Voltage)");
-int count        = doc.XPath<int>("count(/Config/Item)");
-bool enabled     = doc.XPath<bool>("boolean(/Config/@Enabled)");
-auto nodes       = doc.XPath<std::vector<XmlNode>>("/Config/Item");
+std::string name  = doc.XPath<std::string>("string(/Config/@Name)");
+                  = doc.XPath<std::string>("/Config/@Name");  //  if resolves to single node, the XPath `string(.)` function applied
+double voltage    = doc.XPath<double>("number(/Config/@Voltage)");
+                  = doc.XPath<double>("/Config/@Voltage");  //  if resolves to single node, the XPath `number(.)` function applied
+int count         = doc.XPath<int>("count(/Config/Item)");
+bool enabled      = doc.XPath<bool>("boolean(/Config/@Enabled)");
+                  = doc.XPath<bool>("/Config/@Enabled");    //  if resolves to single node, the XPath `boolean(.)` function applied
+auto nodes        = doc.XPath<std::vector<XmlNode>>("/Config/Item");
 ```
 
 The conversion is implicit in the sense that callers specify only the desired C++ result type; the XPath implementation performs the libxml2 result-type extraction and C++ conversion internally.
