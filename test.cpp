@@ -224,9 +224,15 @@ void test_save_and_reload()
 
 void test_xmljrnl_constructor_and_active_release()
 {
-    banner("XmlJrnl constructor / active Release branch");
+    banner("XmlJrnl constructor / source DOM / active Release / JID map");
 
-    static const char journal_xml[] =
+    static const std::string source_xml =
+        "<Root JID=\"1234567890abcdef\">"
+        "  <A JID=\"aaaaaaaaaaaaaaaa\"/>"
+        "  <B JID=\"bbbbbbbbbbbbbbbb\"/>"
+        "</Root>";
+
+    static const std::string journal_xml =
         "<JRNL>"
         "  <Release Number=\"0\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
         "    <Release Number=\"1\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
@@ -234,17 +240,43 @@ void test_xmljrnl_constructor_and_active_release()
         "  </Release>"
         "</JRNL>";
 
-    XmlJrnl journal((std::string(journal_xml)));
+    XmlDoc source(source_xml);
+    CHECK(!source.err);
+
+    XmlJrnl journal(source, journal_xml);
     CHECK(!journal.err);
 
-    journal.RefreshActiveRelease();
-    print_error("RefreshActiveRelease", journal.err);
-    CHECK(!journal.err);
+    /*
+     * XmlJrnl is permanently associated with its canonical source DOM.
+     */
+    CHECK(&journal.source_doc == &source);
+
+    /*
+     * Constructor should have resolved the active Release.
+     */
     CHECK(journal.active_release.node != nullptr);
     CHECK_EQ(journal.rel_no.size(), std::size_t{2});
     CHECK_EQ(journal.rel_no[0], 0);
     CHECK_EQ(journal.rel_no[1], 1);
-    CHECK_EQ(journal.active_release.XPath<int>("number(@Number)"), 1);
+    CHECK_EQ(journal.active_release.XPath<int>("@Number"), 1);
+
+    /*
+     * Constructor should also have indexed all existing source-document JIDs.
+     * jid_map values are the @JID attribute nodes themselves.
+     */
+    CHECK_EQ(journal.jid_map.size(), std::size_t{3});
+
+    CHECK(journal.jid_map.find("1234567890abcdef") != journal.jid_map.end());
+    CHECK(journal.jid_map.find("aaaaaaaaaaaaaaaa") != journal.jid_map.end());
+    CHECK(journal.jid_map.find("bbbbbbbbbbbbbbbb") != journal.jid_map.end());
+
+    /*
+     * Verify that the map points into the source DOM, not the journal DOM.
+     */
+    for (const auto& [jid, node] : journal.jid_map) {
+        CHECK(node != nullptr);
+        CHECK(node->doc == source.doc);
+    }
 }
 
 void test_journal_aware_mutations()
@@ -322,6 +354,120 @@ void test_journal_aware_mutations()
     std::remove(path);
 }
 
+void test_journal_log_modify_jid()
+{
+    banner("XmlJrnl::LogModify JID");
+
+    static const std::string source_xml =
+        "<Root>"
+        "  <A JID=\"0123456789abcdef\">old A</A>"
+        "  <B>old B</B>"
+        "</Root>";
+
+    XmlDoc doc(source_xml);
+    CHECK(!doc.err);
+
+    doc.CreateJournal("/tmp/xmlcls_test_jid.jrnl.xml");
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlJrnl& journal = *doc.JRNL;
+
+    /*
+     * ------------------------------------------------------------
+     * Existing JID
+     * ------------------------------------------------------------
+     */
+    XmlNode a = require_nodes(doc, "/Root/A")[0];
+
+    CHECK_EQ(a.XPath<std::string>("@JID"),
+             std::string("0123456789abcdef"));
+
+    journal.LogModify(a, a.XML());
+
+    print_error("LogModify(A)", journal.err);
+    CHECK(!journal.err);
+
+    /*
+     * Existing JID must remain unchanged and map to A itself.
+     */
+    CHECK_EQ(a.XPath<std::string>("@JID"),
+             std::string("0123456789abcdef"));
+
+    auto ait = journal.jid_map.find("0123456789abcdef");
+
+    CHECK(ait != journal.jid_map.end());
+
+    if (ait != journal.jid_map.end())
+        CHECK(ait->second == a.node);
+
+    /*
+     * Change record must identify the transaction by @JID.
+     */
+    CHECK_EQ(
+        journal.active_release.XPath<std::string>(
+            "./Change[1]/@JID"),
+        std::string("0123456789abcdef")
+    );
+
+    /*
+     * ------------------------------------------------------------
+     * Newly assigned JID
+     * ------------------------------------------------------------
+     */
+    XmlNode b = require_nodes(doc, "/Root/B")[0];
+
+    CHECK_EQ(
+        b.XPath<std::vector<XmlNode>>("./@JID").size(),
+        std::size_t{0}
+    );
+
+    journal.LogModify(b, b.XML());
+
+    print_error("LogModify(B)", journal.err);
+    CHECK(!journal.err);
+
+    /*
+     * LogModify() must assign B a JID.
+     */
+    std::string new_jid = b.XPath<std::string>("@JID");
+
+    CHECK(!new_jid.empty());
+    CHECK_EQ(new_jid.size(), std::size_t{16});
+    CHECK(new_jid != "0123456789abcdef");
+
+    /*
+     * Newly created JID must also be indexed to B itself.
+     */
+    auto bit = journal.jid_map.find(new_jid);
+
+    CHECK(bit != journal.jid_map.end());
+
+    if (bit != journal.jid_map.end())
+        CHECK(bit->second == b.node);
+
+    /*
+     * The second journal transaction must carry exactly B's new JID
+     * as an attribute of Change.
+     */
+    CHECK_EQ(
+        journal.active_release.XPath<std::string>(
+            "./Change[2]/@JID"),
+        new_jid
+    );
+
+    CHECK_EQ(
+        journal.active_release.XPath<int>(
+            "count(./Change)"),
+        2
+    );
+
+    print_xml("source after JID tests", doc);
+    print_xml("journal after JID tests", doc.JRNL);
+
+    std::remove("/tmp/xmlcls_test_jid.jrnl.xml");
+}
+
 } // namespace
 
 int main()
@@ -334,6 +480,7 @@ int main()
     test_delete_node();
     test_save_and_reload();
     test_xmljrnl_constructor_and_active_release();
+    test_journal_log_modify_jid();
     test_journal_aware_mutations();
 
     xmlCleanupParser();

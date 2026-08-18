@@ -42,8 +42,8 @@ static std::string CurrentIsoTimestampUTC()
 }
 
 XmlDoc::XmlDoc(const char *filename)
+    : doc(xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS))
 {
-    doc = xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS);
     if (doc == NULL) { 
         xmlError e = *xmlGetLastError(); 
         err = new Error{lvl::ERR, e.message, filename}; 
@@ -53,8 +53,8 @@ XmlDoc::XmlDoc(const char *filename)
 }
 
 XmlDoc::XmlDoc(const std::string content)
+    : doc(xmlReadMemory(content.c_str(), content.length(), "noname.xml", NULL, XML_PARSE_NOBLANKS))
 {
-    doc = xmlReadMemory(content.c_str(), content.length(), "noname.xml", NULL, XML_PARSE_NOBLANKS);
     if (doc == NULL)
     {
         xmlError e = *xmlGetLastError();
@@ -89,7 +89,7 @@ XmlDoc::~XmlDoc()
 }
 
 void XmlDoc::OpenJournal(const char* filename) {
-    JRNL = new XmlJrnl(filename);
+    JRNL = new XmlJrnl(*this, filename);
     if (!JRNL->doc) { delete JRNL; JRNL = nullptr; }
     jrnl_map[doc] = JRNL;
 }
@@ -106,7 +106,7 @@ void XmlDoc::CreateJournal(const char* filename, std::string XML) {
         snprintf(buf, sizeof(buf), seed, CurrentIsoTimestampUTC().c_str(), CurrentIsoTimestampUTC().c_str());
         XML = std::string(buf);
     }
-    JRNL = new XmlJrnl(XML);
+    JRNL = new XmlJrnl(*this, XML);
     jrnl_map[doc] = JRNL;
 }
 
@@ -116,7 +116,7 @@ void XmlDoc::clear() {
         auto it = doc_map.find(doc);
         if (it != doc_map.end()) doc_map.erase(it);
         // xmlFreeDoc(doc);
-        doc = nullptr;
+        // doc = nullptr;
     }
 }
 
@@ -615,13 +615,30 @@ void XmlNode::Delete()
     xmlFreeNode(doomed);
 }
 
-XmlJrnl::XmlJrnl(const char* filename): XmlDoc(filename)
-    { if (!err) RefreshActiveRelease(); }
+#define JRNL_CHECK_NODE(N)                                              \
+    do {                                                                \
+        if (!(N).node || (N).doc != source_doc.doc) {                  \
+            err = new Error{ lvl::ERR, "XmlNode does not belong to this journal's source DOM", (N).node ? (N).GetPath() : std::string() };                                                          \
+            return;                                                     \
+        }                                                               \
+    } while (0)
 
-XmlJrnl::XmlJrnl(const std::string content) : XmlDoc(content)
-    { if (!err) RefreshActiveRelease(); }
+XmlJrnl::XmlJrnl(XmlDoc& source, const char* filename): XmlDoc(filename), source_doc(source) {
+    RefreshActiveRelease();
+    if (err) return;
+
+    BuildJIDMap();
+}
+
+XmlJrnl::XmlJrnl(XmlDoc& source, const std::string content) : XmlDoc(content), source_doc(source){
+    RefreshActiveRelease();
+    if (err) return;
+
+    BuildJIDMap();
+}
 
 void XmlJrnl::LogAdd(XmlNode& added) {
+    JRNL_CHECK_NODE(added);
     if (!active_release.node || !added.node) return;
 
     std::string change =
@@ -631,18 +648,36 @@ void XmlJrnl::LogAdd(XmlNode& added) {
     active_release.AddChild(change);
 }
 
-void XmlJrnl::LogModify(XmlNode& node, const std::string& oldXML) {
+void XmlJrnl::LogModify(XmlNode& node, const std::string& oldXML)
+{
+    JRNL_CHECK_NODE(node);
 
-    if (!active_release.node || !node.node) return;
+    if (!active_release.node || !node.node)
+        return;
+
+    bool had_jid = node.XPath<bool>("./@JID");
+
+    std::string jid = JID(node.node);
+    if (err || jid.empty())
+        return;
+
+    const std::string savedXML =
+        had_jid ? oldXML : node.XML();
 
     std::string change =
         "\n<Change Type=\"Modify\" TimeStamp=\"" +
-        CurrentIsoTimestampUTC() + "\">"
-        "<XPathLoc>" + node.GetPath() + "</XPathLoc>\n</Change>\n";
+        CurrentIsoTimestampUTC() + "\""
+        " JID=\"" + jid + "\">"
+        "<Node Encoding=\"Base64\">" +
+        base64_encode(savedXML) +
+        "</Node>"
+        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
+        "\n</Change>\n";
 
     active_release.AddChild(change);
 }
 void XmlJrnl::LogDelete(XmlNode& node) {
+    JRNL_CHECK_NODE(node);
     if (!active_release.node || !node.node) return;
 
     std::string change =
@@ -937,4 +972,84 @@ XmlNode XmlJrnl::FindActiveRelease(XmlNode current, std::vector<int>& path)
         return current;
 
     return FindActiveRelease(children.back(), path);
+}
+
+void XmlJrnl::BuildJIDMap()
+{
+    jid_map.clear();
+
+    auto nl = source_doc.XPath<std::vector<XmlNode>>("//*/@JID");
+
+    if (source_doc.err)
+        { err = source_doc.err; return; }
+
+    for (auto n : nl) {
+        std::string jid = n.XPath<std::string>(".");
+
+        auto [it, inserted] = jid_map.emplace(jid, n.node->parent);
+
+        if (!inserted) { 
+            err = new Error{ lvl::ERR, "Duplicate JID \"" + jid + "\"", n.GetPath() };
+            return;
+        }
+    }
+}
+
+std::string XmlJrnl::JID()
+{
+    static thread_local std::mt19937_64 rng{std::random_device{}()};
+
+    for (;;) {
+        char buf[17];
+
+        std::snprintf(
+            buf,
+            sizeof(buf),
+            "%016llx",
+            static_cast<unsigned long long>(rng())
+        );
+
+        std::string jid(buf);
+
+        if (jid_map.find(jid) == jid_map.end())
+            return jid;
+    }
+}
+
+std::string XmlJrnl::JID(xmlNodePtr node)
+{
+    if (!node || node->doc != source_doc.doc) {
+        err = new Error{ lvl::ERR, "Cannot assign JID: node does not belong to this journal's source DOM", node ? XmlNode(node).GetPath() : std::string() };
+        return {};
+    }
+
+    xmlChar* value = xmlGetProp(node, BAD_CAST "JID");
+
+    if (value) {
+        std::string jid(reinterpret_cast<const char*>(value));
+        xmlFree(value);
+
+        auto it = jid_map.find(jid);
+
+        if (it == jid_map.end())
+            jid_map[jid] = node;
+
+        else if (it->second != node) {
+            err = new Error{ lvl::ERR, "Duplicate JID \"" + jid + "\"", XmlNode(node).GetPath() };
+            return {};
+        }
+
+        return jid;
+    }
+
+    std::string jid = JID();
+
+    if (!xmlSetProp(node, BAD_CAST "JID", BAD_CAST jid.c_str())) {
+        err = new Error{ lvl::ERR, "Unable to assign JID", XmlNode(node).GetPath() };
+        return {};
+    }
+
+    jid_map[jid] = node;
+
+    return jid;
 }

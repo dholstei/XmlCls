@@ -13,6 +13,8 @@
 #include <libxml/xpathInternals.h>
 #include <libxml/xmlerror.h>
 #include <mutex>
+#include <random>
+#include <cstdint>
 
 #include "string.h"
 
@@ -55,30 +57,19 @@ public:
     XmlJrnl* JRNL = nullptr;
     mutable std::recursive_mutex mtx;
 
-    XmlDoc() {}
+    xmlDocPtr const doc;
+
+    XmlDoc() : doc(nullptr) {}
     XmlDoc(const XmlDoc&) = delete;
     XmlDoc& operator=(const XmlDoc&) = delete;
 
-    XmlDoc(XmlDoc&& other) noexcept {
-        doc = other.doc;
-        other.doc = nullptr;
+    XmlDoc(xmlDocPtr doc) noexcept
+        : doc(doc) {
         doc_map[doc] = this;
     }
 
-    XmlDoc(xmlDocPtr doc) noexcept {
-        this->doc = doc;
-        doc_map[doc] = this;
-    }
-
-    XmlDoc& operator=(XmlDoc&& other) noexcept {
-        if (this != &other) {
-            clear();
-
-            doc = other.doc;
-            other.doc = nullptr;
-        }
-        return *this;
-    }
+    XmlDoc(XmlDoc&&) = delete;
+    XmlDoc& operator=(XmlDoc&&) = delete;
 
    /**
     * @brief Construct an XmlDoc from a file on disk.
@@ -147,7 +138,6 @@ public:
     void CreateJournal(const char* filename, std::string XML = "");
 
 private:
-    xmlDocPtr doc = nullptr;
 
     void clear() ;
 };
@@ -305,13 +295,17 @@ public:
     /// Deepest currently open Release node to which changes are appended.
     XmlNode active_release;
 
+    XmlDoc& source_doc;  ///< XmlDoc to which this journal is attached.
+
+    std::map<std::string, xmlNodePtr> jid_map;
+
     /**
      * @brief Open an existing journal file.
      * @param filename Path to the journal XML file.
      *
      * Loads the journal and determines the deepest currently open Release.
      */
-    XmlJrnl(const char *filename);
+    XmlJrnl(XmlDoc& source, const char *filename);
 
     /**
      * @brief Construct a journal from XML text.
@@ -320,7 +314,7 @@ public:
      * Parses the supplied XML and determines the deepest currently open
      * Release.
      */
-    XmlJrnl(const std::string content);
+    XmlJrnl(XmlDoc& source, const std::string content);
 
     /**
      * @brief Journals cannot themselves have journals.
@@ -385,6 +379,13 @@ public:
      * rebuilds @ref rel_no with its release-number path.
      */
     void RefreshActiveRelease();
+
+    void BuildJIDMap();
+    
+    std::string NewJID();
+
+    std::string JID(xmlNodePtr node);
+    std::string JID();
 
     // std::string ReleaseString() const;
 
