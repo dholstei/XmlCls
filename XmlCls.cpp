@@ -21,22 +21,6 @@ Error* SetXmlError(const std::string& context) {
     return err;
 }
 
-static std::string CurrentIsoTimestampUTC()
-{
-    std::time_t now = std::time(nullptr);
-    std::tm tm{};
-
-#ifdef _WIN32
-    gmtime_s(&tm, &now);
-#else
-    gmtime_r(&now, &tm);
-#endif
-
-    char buffer[32]{};
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
-    return buffer;
-}
-
 XmlDoc::XmlDoc(const char *filename)
     : doc(xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS))
 {
@@ -675,81 +659,37 @@ XmlJrnl::XmlJrnl(XmlDoc& source, const std::string content) : XmlDoc(content), s
     BuildJIDMap();
 }
 
-void XmlJrnl::LogAdd(XmlNode& added) {
-    JRNL_CHECK_NODE(added);
-    if (!active_release.node || !added.node) return;
+void XmlJrnl::LogAdd(XmlNode& node)
+{
+    JRNL_CHECK_NODE(node);
 
-    std::string change =
-        "\n<Change Type=\"Add\" TimeStamp=\"" + CurrentIsoTimestampUTC() + "\">"
-        "<XPathLoc>" + added.GetPath() + "</XPathLoc>\n</Change>\n";
+    ActionAdd action(*this, node);
+    action.Record();
 
-    active_release.AddChild(change);
+    if (action.err)
+        err = action.err;
 }
 
 void XmlJrnl::LogModify(XmlNode& node, const std::string& oldXML)
 {
     JRNL_CHECK_NODE(node);
 
-    if (!active_release.node || !node.node)
-        return;
+    ActionModify action(*this, node, oldXML);
+    action.Record();
 
-    bool had_jid = node.XPath<bool>("./@JID");
-
-    std::string jid = node.JID();
-    if (err || jid.empty())
-        return;
-
-    const std::string savedXML =
-        had_jid ? oldXML : node.XML();
-
-    std::string change =
-        "\n<Change Type=\"Modify\" TimeStamp=\"" +
-        CurrentIsoTimestampUTC() + "\""
-        " JID=\"" + jid + "\">"
-        "<Node Encoding=\"Base64\">" +
-        base64_encode(savedXML) +
-        "</Node>"
-        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
-        "\n</Change>\n";
-
-    active_release.AddChild(change);
+    if (action.err)
+        err = action.err;
 }
+
 void XmlJrnl::LogDelete(XmlNode& node)
 {
     JRNL_CHECK_NODE(node);
-    if (!active_release.node || !node.node) return;
 
-    std::string jid = node.JID();
-    if (node.err || jid.empty()) { err = node.err; return; }
+    ActionDelete action(*this, node);
+    action.Record();
 
-    XmlNode parent = node.XPath<std::vector<XmlNode>>("..")[0];
-    std::string parent_jid = parent.JID();
-    if (parent.err || parent_jid.empty()) { err = parent.err; return; }
-
-    XmlNode before;
-    auto before_nodes = node.XPath<std::vector<XmlNode>>("preceding-sibling::*[1]");
-    if (!before_nodes.empty()) before = before_nodes[0];
-
-    XmlNode after;
-    auto after_nodes = node.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
-    if (!after_nodes.empty()) after = after_nodes[0];
-
-    std::string change =
-        "\n<Change Type=\"Deletion\" TimeStamp=\"" + CurrentIsoTimestampUTC() + "\" JID=\"" + jid + "\">"
-        "<Parent JID=\"" + parent_jid + "\"/>";
-
-    if (before.node)
-        change += "<Before JID=\"" + before.JID() + "\"/>";
-
-    if (after.node)
-        change += "<After JID=\"" + after.JID() + "\"/>";
-
-    change +=
-        "<Node Encoding=\"Base64\">" + base64_encode(node.XML()) + "</Node>"
-        "<Reversed TimeStamp=\"\" Value=\"false\"/>"
-        "\n</Change>\n";
-
-    active_release.AddChild(change);
+    if (action.err)
+        err = action.err;
 }
 
 void XmlJrnl::Undo()
@@ -773,147 +713,41 @@ void XmlJrnl::Undo()
 void XmlJrnl::Undo(XmlNode action_node)
 {
     if (!action_node.node) {
-        err = new Error{ lvl::ERR, "Cannot undo: invalid journal action node", "" };
+        err = new Error{lvl::ERR, "Cannot undo: invalid journal action node", ""};
         return;
     }
 
-    const std::string journal_path = action_node.GetPath();
-
-    /*
-     * Already undone: nothing to do.
-     */
-    if (action_node.XPath<bool>( "./Reversed[@Value='true']"))
+    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
         return;
 
     const std::string type = action_node.XPath<std::string>("@Type");
 
-    if (type != "Modify") {
-        err = new Error{ lvl::ERR, "Undo currently implemented only for Modify transactions", journal_path };
+    if (type == "Modify") {
+        ActionModify action(*this, action_node);
+        action.Undo();
+
+        if (action.err)
+            err = action.err;
+
         return;
     }
-
-    const std::string jid =
-        action_node.XPath<std::string>("@JID");
-
-    if (jid.empty()) {
-        err = new Error{ lvl::ERR, "Cannot undo Modify: journal transaction has no JID", journal_path };
+    else if (type == "Deletion") {
+        ActionDelete action(*this, action_node, true);
+        action.Undo();
+        if (action.err) err = action.err;
         return;
     }
+    else if (type == "Add") {
+        ActionAdd action(*this, action_node, true);
+        action.Undo();
 
-    /*
-     * JID must identify the current live version of the logical node.
-     */
-    auto it = jid_map.find(jid);
-
-    if (it == jid_map.end() || !it->second) {
-        err = new Error{
-            lvl::ERR,
-            "Cannot undo Modify: JID \"" + jid +
-                "\" is not present in the source DOM",
-            journal_path
-        };
-        return;
-    }
-
-    xmlNodePtr current = it->second;
-
-    if (current->doc != source_doc.doc) {
-        err = new Error{
-            lvl::ERR,
-            "Cannot undo Modify: JID \"" + jid +
-                "\" belongs to an incompatible DOM",
-            journal_path
-        };
-        return;
-    }
-
-    /*
-     * Recover the node state that existed before parse().
-     */
-    const std::string encoded =
-        action_node.XPath<std::string>("./Node");
-
-    if (encoded.empty()) {
-        err = new Error{ lvl::ERR, "Cannot undo Modify: journal contains no previous node state", journal_path };
-        return;
-    }
-
-    const std::string oldXML = base64_decode(encoded);
-
-    xmlNodePtr restored =
-        XmlNodeFromString(oldXML, source_doc.doc, err);
-
-    if (!restored) {
-        if (err)
-            err->data = journal_path;
-        else
-            err = new Error{ lvl::ERR, "Cannot undo Modify: saved XML cannot be restored", journal_path };
+        if (action.err)
+            err = action.err;
 
         return;
     }
 
-    /*
-     * The saved XML must carry the same logical identity.
-     */
-    xmlChar* restored_jid =
-        xmlGetProp(restored, BAD_CAST "JID");
-
-    if (!restored_jid) {
-        xmlFreeNode(restored);
-
-        err = new Error{ lvl::ERR, "Cannot undo Modify: saved node contains no JID", journal_path };
-        return;
-    }
-
-    const std::string restored_jid_str(
-        reinterpret_cast<const char*>(restored_jid)
-    );
-
-    xmlFree(restored_jid);
-
-    if (restored_jid_str != jid) {
-        xmlFreeNode(restored);
-
-        err = new Error{ lvl::ERR, "Cannot undo Modify: saved node JID does not match transaction JID", journal_path };
-        return;
-    }
-
-    /*
-     * Replace the current incarnation of this logical node.
-     */
-    xmlNodePtr replaced = xmlReplaceNode(current, restored);
-
-    if (replaced != current) {
-        xmlFreeNode(restored);
-
-        err = new Error{ lvl::ERR, "Cannot undo Modify: xmlReplaceNode failed", journal_path };
-        return;
-    }
-
-    xmlFreeNode(current);
-
-    /*
-     * The logical identity survives, but its xmlNodePtr has changed.
-     */
-    jid_map[jid] = restored;
-
-    /*
-     * Stamp the transaction only after the DOM has been restored
-     * successfully.
-     */
-    auto reversed =
-        action_node.XPath<std::vector<XmlNode>>("./Reversed");
-
-    if (reversed.size() != 1) {
-        err = new Error{ lvl::ERR, "Modify was undone but journal contains invalid Reversed state", journal_path };
-        return;
-    }
-
-    xmlSetProp( reversed[0].node, BAD_CAST "Value", BAD_CAST "true" );
-
-    const std::string timestamp = CurrentIsoTimestampUTC();
-
-    xmlSetProp( reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str() );
+    err = new Error{lvl::ERR, "Undo currently implemented only for Modify transactions", action_node.GetPath()};
 }
 
 void XmlJrnl::Undo(std::vector<XmlNode> action_nodes) {
@@ -989,4 +823,438 @@ std::string XmlJrnl::JID()
         if (jid_map.find(jid) == jid_map.end())
             return jid;
     }
+}
+
+ActionModify::ActionModify(XmlJrnl& j, XmlNode n, const std::string& old)
+    : Action(j), node(n), oldXML(old)
+{
+    type = "Modify";
+    jid = node.JID();
+
+    if (node.err)
+        err = node.err;
+}
+
+ActionModify::ActionModify(XmlJrnl& j, XmlNode action)
+    : Action(j, action)
+{
+    type = "Modify";
+    jid = action_node.XPath<std::string>("@JID");
+
+    if (action_node.err)
+        err = action_node.err;
+}
+
+void Action::ReverseStamp()
+{
+    auto reversed = action_node.XPath<std::vector<XmlNode>>("./Reversed");
+
+    if (reversed.size() != 1) {
+        err = new Error{lvl::ERR, "Journal action contains invalid Reversed state", action_node.GetPath()};
+        return;
+    }
+
+    xmlSetProp(reversed[0].node, BAD_CAST "Value", BAD_CAST "true");
+
+    const std::string timestamp = CurrentIsoTimestampUTC();
+    xmlSetProp(reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str());
+}
+
+void ActionModify::Record()
+{
+    if (err) return;
+
+    XmlNode parent = node.XPath<std::vector<XmlNode>>("..")[0];
+    const std::string parent_jid = parent.JID();
+    if (parent.err || parent_jid.empty()) { err = parent.err; return; }
+
+    Action::Record();
+    if (err) return;
+
+    action_node.AddChild("<Parent JID=\"" + parent_jid + "\"/>");
+    if (action_node.err) { err = action_node.err; return; }
+
+    action_node.AddChild("<Node Encoding=\"Base64\">" + base64_encode(oldXML) + "</Node>");
+    if (action_node.err) err = action_node.err;
+}
+
+void ActionModify::Undo()
+{
+    if (!action_node.node) {
+        err = new Error{lvl::ERR, "Cannot undo Modify: invalid journal action node", ""};
+        return;
+    }
+
+    const std::string journal_path = action_node.GetPath();
+
+    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+        return;
+
+    if (jid.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Modify: journal transaction has no JID", journal_path};
+        return;
+    }
+
+    /*
+     * JID must identify the current live incarnation of this logical node.
+     */
+    const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
+
+    if (parent_jid.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Modify: journal transaction has no Parent JID", journal_path};
+        return;
+    }
+
+    auto pit = jrnl.jid_map.find(parent_jid);
+
+    if (pit == jrnl.jid_map.end() || !pit->second) {
+        auto causes = jrnl.XPath<std::vector<XmlNode>>("//Change[@JID='" + parent_jid + "']");
+
+        if (!causes.empty())
+            Conflict("parent node is no longer available", causes.back());
+        else
+            err = new Error{lvl::ERR, "Cannot undo Modify: parent JID \"" + parent_jid + "\" is not present in the source DOM", journal_path};
+
+        return;
+    }
+
+    auto it = jrnl.jid_map.find(jid);
+
+    if (it == jrnl.jid_map.end() || !it->second) {
+        auto causes = jrnl.XPath<std::vector<XmlNode>>("//Change[@JID='" + jid + "']");
+
+        if (!causes.empty())
+            Conflict("modified node is no longer available", causes.back());
+        else
+            err = new Error{lvl::ERR, "Cannot undo Modify: JID \"" + jid + "\" is not present in the source DOM", journal_path};
+
+        return;
+    }
+
+    xmlNodePtr current = it->second;
+
+    if (current->doc != jrnl.source_doc.doc) {
+        err = new Error{lvl::ERR, "Cannot undo Modify: JID \"" + jid + "\" belongs to an incompatible DOM", journal_path};
+        return;
+    }
+
+    /*
+     * Recover the previous serialized state.
+     */
+    const std::string encoded = action_node.XPath<std::string>("./Node");
+
+    if (encoded.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Modify: journal contains no previous node state", journal_path};
+        return;
+    }
+
+    const std::string oldXML = base64_decode(encoded);
+    xmlNodePtr restored = XmlNodeFromString(oldXML, jrnl.source_doc.doc, err);
+
+    if (!restored) {
+        if (err)
+            err->data = journal_path;
+        else
+            err = new Error{lvl::ERR, "Cannot undo Modify: saved XML cannot be restored", journal_path};
+
+        return;
+    }
+
+    /*
+     * Saved state must represent the same logical node.
+     */
+    XmlNode restored_node(restored);
+    const std::string restored_jid = restored_node.XPath<std::string>("@JID");
+
+    if (restored_jid != jid) {
+        xmlFreeNode(restored);
+        err = new Error{lvl::ERR, "Cannot undo Modify: saved node JID does not match transaction JID", journal_path};
+        return;
+    }
+
+    /*
+     * Replace the current physical node with its previous incarnation.
+     */
+    xmlNodePtr replaced = xmlReplaceNode(current, restored);
+
+    if (replaced != current) {
+        xmlFreeNode(restored);
+        err = new Error{lvl::ERR, "Cannot undo Modify: xmlReplaceNode failed", journal_path};
+        return;
+    }
+
+    xmlFreeNode(current);
+
+    /*
+     * Logical identity remains the same; only xmlNodePtr changed.
+     */
+    jrnl.jid_map[jid] = restored;
+
+    ReverseStamp();
+}
+
+ActionDelete::ActionDelete(XmlJrnl& j, XmlNode n) : Action(j), node(n) {
+    type = "Deletion";
+    jid = node.JID();
+    if (node.err) err = node.err;
+}
+
+ActionDelete::ActionDelete(XmlJrnl& j, XmlNode action, bool) : Action(j, action) {
+    type = "Deletion";
+    jid = action_node.XPath<std::string>("@JID");
+    if (action_node.err) err = action_node.err;
+}
+
+void ActionDelete::Record()
+{
+    if (err) return;
+
+    XmlNode parent = node.XPath<std::vector<XmlNode>>("..")[0];
+    std::string parent_jid = parent.JID();
+    if (parent.err || parent_jid.empty()) { err = parent.err; return; }
+
+    XmlNode before;
+    auto before_nodes = node.XPath<std::vector<XmlNode>>("preceding-sibling::*[1]");
+    if (!before_nodes.empty()) before = before_nodes[0];
+
+    XmlNode after;
+    auto after_nodes = node.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
+    if (!after_nodes.empty()) after = after_nodes[0];
+
+    Action::Record();
+    if (err) return;
+
+    action_node.AddChild("<Parent JID=\"" + parent_jid + "\"/>");
+    if (action_node.err) { err = action_node.err; return; }
+
+    if (before.node) {
+        action_node.AddChild("<Before JID=\"" + before.JID() + "\"/>");
+        if (action_node.err) { err = action_node.err; return; }
+    }
+
+    if (after.node) {
+        action_node.AddChild("<After JID=\"" + after.JID() + "\"/>");
+        if (action_node.err) { err = action_node.err; return; }
+    }
+
+    action_node.AddChild("<Node Encoding=\"Base64\">" + base64_encode(node.XML()) + "</Node>");
+    if (action_node.err) err = action_node.err;
+}
+
+void ActionDelete::Undo()
+{
+    if (!action_node.node) {
+        err = new Error{lvl::ERR, "Cannot undo Deletion: invalid journal action node", ""};
+        return;
+    }
+
+    const std::string journal_path = action_node.GetPath();
+
+    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+        return;
+
+    if (jid.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Deletion: journal transaction has no JID", journal_path};
+        return;
+    }
+
+    const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
+    if (parent_jid.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Deletion: journal transaction has no Parent JID", journal_path};
+        return;
+    }
+
+    auto pit = jrnl.jid_map.find(parent_jid);
+    if (pit == jrnl.jid_map.end() || !pit->second) {
+        Conflict("parent node is no longer available", action_node);
+        return;
+    }
+
+    XmlNode parent(pit->second);
+
+    XmlNode before;
+    if (action_node.XPath<bool>("./Before")) {
+        const std::string before_jid = action_node.XPath<std::string>("./Before/@JID");
+        auto it = jrnl.jid_map.find(before_jid);
+
+        if (it == jrnl.jid_map.end() || !it->second) {
+            Conflict("preceding sibling is no longer available", action_node);
+            return;
+        }
+
+        before = XmlNode(it->second);
+
+        if (before.node->parent != parent.node) {
+            Conflict("preceding sibling is no longer under the recorded parent", action_node);
+            return;
+        }
+    }
+
+    XmlNode after;
+    if (action_node.XPath<bool>("./After")) {
+        const std::string after_jid = action_node.XPath<std::string>("./After/@JID");
+        auto it = jrnl.jid_map.find(after_jid);
+
+        if (it == jrnl.jid_map.end() || !it->second) {
+            Conflict("following sibling is no longer available", action_node);
+            return;
+        }
+
+        after = XmlNode(it->second);
+
+        if (after.node->parent != parent.node) {
+            Conflict("following sibling is no longer under the recorded parent", action_node);
+            return;
+        }
+    }
+
+    if (before.node && after.node) {
+        auto next = before.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
+
+        if (next.size() != 1 || next[0].node != after.node) {
+            Conflict("deletion slot has been changed", action_node);
+            return;
+        }
+    }
+
+    if (!before.node && !after.node && parent.XPath<bool>("./*")) {
+        Conflict("parent now contains children that did not exist at deletion", action_node);
+        return;
+    }
+
+    const std::string encoded = action_node.XPath<std::string>("./Node");
+
+    if (encoded.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Deletion: journal contains no deleted node", journal_path};
+        return;
+    }
+
+    const std::string oldXML = base64_decode(encoded);
+    xmlNodePtr restored = XmlNodeFromString(oldXML, jrnl.source_doc.doc, err);
+
+    if (!restored) {
+        if (err) err->data = journal_path;
+        else err = new Error{lvl::ERR, "Cannot undo Deletion: saved XML cannot be restored", journal_path};
+        return;
+    }
+
+    XmlNode restored_node(restored);
+
+    if (restored_node.XPath<std::string>("@JID") != jid) {
+        xmlFreeNode(restored);
+        err = new Error{lvl::ERR, "Cannot undo Deletion: saved node JID does not match transaction JID", journal_path};
+        return;
+    }
+
+    xmlNodePtr inserted = nullptr;
+
+    if (before.node)
+        inserted = xmlAddNextSibling(before.node, restored);
+    else if (after.node)
+        inserted = xmlAddPrevSibling(after.node, restored);
+    else
+        inserted = xmlAddChild(parent.node, restored);
+
+    if (!inserted) {
+        xmlFreeNode(restored);
+        err = new Error{lvl::ERR, "Cannot undo Deletion: node could not be restored", journal_path};
+        return;
+    }
+
+    XmlNode inserted_node(inserted);
+    inserted_node.JID(jid);
+
+    if (inserted_node.err) {
+        err = inserted_node.err;
+        return;
+    }
+
+    ReverseStamp();
+}
+
+ActionAdd::ActionAdd(XmlJrnl& j, XmlNode n) : Action(j), node(n) {
+    type = "Add";
+    jid = node.JID();
+    if (node.err) err = node.err;
+}
+
+ActionAdd::ActionAdd(XmlJrnl& j, XmlNode action, bool) : Action(j, action) {
+    type = "Add";
+    jid = action_node.XPath<std::string>("@JID");
+    if (action_node.err) err = action_node.err;
+}
+
+void ActionAdd::Record()
+{
+    if (err) return;
+
+    XmlNode parent = node.XPath<std::vector<XmlNode>>("..")[0];
+    const std::string parent_jid = parent.JID();
+
+    if (parent.err || parent_jid.empty()) {
+        err = parent.err;
+        return;
+    }
+
+    Action::Record();
+    if (err) return;
+
+    action_node.AddChild("<Parent JID=\"" + parent_jid + "\"/>");
+    if (action_node.err) err = action_node.err;
+}
+
+void ActionAdd::Undo()
+{
+    if (!action_node.node) {
+        err = new Error{lvl::ERR, "Cannot undo Add: invalid journal action node", ""};
+        return;
+    }
+
+    const std::string journal_path = action_node.GetPath();
+
+    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+        return;
+
+    if (jid.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Add: journal transaction has no JID", journal_path};
+        return;
+    }
+
+    const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
+
+    if (parent_jid.empty()) {
+        err = new Error{lvl::ERR, "Cannot undo Add: journal transaction has no Parent JID", journal_path};
+        return;
+    }
+
+    auto pit = jrnl.jid_map.find(parent_jid);
+
+    if (pit == jrnl.jid_map.end() || !pit->second) {
+        Conflict("parent node is no longer available", action_node);
+        return;
+    }
+
+    auto it = jrnl.jid_map.find(jid);
+
+    if (it == jrnl.jid_map.end() || !it->second) {
+        Conflict("added node is no longer available", action_node);
+        return;
+    }
+
+    xmlNodePtr current = it->second;
+
+    if (current->parent != pit->second) {
+        Conflict("added node is no longer under its recorded parent", action_node);
+        return;
+    }
+
+    xmlUnlinkNode(current);
+    xmlFreeNode(current);
+
+    /*
+     * Keep the identity reserved in the journal namespace.
+     */
+    jrnl.jid_map[jid] = nullptr;
+
+    ReverseStamp();
 }

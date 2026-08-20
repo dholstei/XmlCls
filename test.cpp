@@ -690,6 +690,260 @@ void test_journal_delete()
     std::remove(path);
 }
 
+void test_journal_undo_delete_middle()
+{
+    banner("ActionDelete::Undo middle child");
+
+    const char* path = "/tmp/xmlcls_test_undo_delete_middle.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B>deleted</B><C/></Root>"));
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Root/B")[0];
+    b.Delete();
+
+    CHECK(!b.err);
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Deletion"));
+
+    const std::string jid = change.XPath<std::string>("@JID");
+    CHECK(!jid.empty());
+    CHECK(doc.JRNL->jid_map[jid] == nullptr);
+
+    doc.JRNL->Undo(change);
+
+    print_error("Undo(Delete B)", doc.JRNL->err);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("/Root/B"), std::string("deleted"));
+
+    XmlNode restored = doc.XPath<std::vector<XmlNode>>("/Root/B")[0];
+
+    CHECK_EQ(restored.XPath<std::string>("@JID"), jid);
+    CHECK(doc.JRNL->jid_map[jid] == restored.node);
+
+    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+
+    const std::string ts = change.XPath<std::string>("./Reversed/@TimeStamp");
+    CHECK(!ts.empty());
+    CHECK(ts.find('T') != std::string::npos);
+    CHECK(ts.back() == 'Z');
+
+    std::remove(path);
+}
+
+void test_journal_undo_delete_first()
+{
+    banner("ActionDelete::Undo first child");
+
+    const char* path = "/tmp/xmlcls_test_undo_delete_first.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B/><C/></Root>"));
+    doc.CreateJournal(path);
+
+    XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    a.Delete();
+
+    CHECK(!a.err);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK(!change.XPath<bool>("./Before"));
+    CHECK(change.XPath<bool>("./After"));
+
+    doc.JRNL->Undo(change);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+
+    std::remove(path);
+}
+
+void test_journal_undo_delete_last()
+{
+    banner("ActionDelete::Undo last child");
+
+    const char* path = "/tmp/xmlcls_test_undo_delete_last.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B/><C/></Root>"));
+    doc.CreateJournal(path);
+
+    XmlNode c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
+    c.Delete();
+
+    CHECK(!c.err);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK(change.XPath<bool>("./Before"));
+    CHECK(!change.XPath<bool>("./After"));
+
+    doc.JRNL->Undo(change);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+
+    std::remove(path);
+}
+
+void test_journal_undo_delete_only_child()
+{
+    banner("ActionDelete::Undo only child");
+
+    const char* path = "/tmp/xmlcls_test_undo_delete_only.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A>only</A></Root>"));
+    doc.CreateJournal(path);
+
+    XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    a.Delete();
+
+    CHECK(!a.err);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK(!change.XPath<bool>("./Before"));
+    CHECK(!change.XPath<bool>("./After"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/*)"), 0);
+
+    doc.JRNL->Undo(change);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<int>("count(/Root/*)"), 1);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("only"));
+
+    std::remove(path);
+}
+
+void test_journal_undo_delete_parent_conflict()
+{
+    banner("ActionDelete::Undo parent conflict");
+
+    const char* path = "/tmp/xmlcls_test_undo_delete_parent_conflict.jrnl.xml";
+
+    XmlDoc doc(std::string("<Outer><Parent><A/><B/><C/></Parent></Outer>"));
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    /*
+     * First transaction: delete B.
+     */
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Outer/Parent/B")[0];
+    b.Delete();
+
+    CHECK(!b.err);
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Outer/Parent/B)"), 0);
+
+    XmlNode b_change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(b_change.XPath<std::string>("@Type"), std::string("Deletion"));
+
+    const std::string parent_jid = b_change.XPath<std::string>("./Parent/@JID");
+    CHECK(!parent_jid.empty());
+    CHECK(doc.JRNL->jid_map[parent_jid] != nullptr);
+
+    /*
+     * Second transaction: delete B's parent.
+     *
+     * This makes the earlier B deletion impossible to undo without first
+     * restoring Parent.
+     */
+    XmlNode parent = doc.XPath<std::vector<XmlNode>>("/Outer/Parent")[0];
+    parent.Delete();
+
+    CHECK(!parent.err);
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Outer/Parent)"), 0);
+
+    XmlNode parent_change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(parent_change.XPath<std::string>("@Type"), std::string("Deletion"));
+    CHECK_EQ(parent_change.XPath<std::string>("@JID"), parent_jid);
+    CHECK(doc.JRNL->jid_map[parent_jid] == nullptr);
+
+    /*
+     * Attempt to undo the older B deletion while its required Parent
+     * remains deleted.
+     */
+    doc.JRNL->Undo(b_change);
+
+    CHECK(doc.JRNL->err != nullptr);
+
+    if (doc.JRNL->err) {
+        CHECK(doc.JRNL->err->level == lvl::INFO);
+        CHECK(doc.JRNL->err->msg.find("Conflict") != std::string::npos);
+    }
+
+    /*
+     * Nothing should have been restored.
+     */
+    CHECK_EQ(doc.XPath<int>("count(/Outer/Parent)"), 0);
+
+    /*
+     * Failed/conflicted undo must not mark the original action reversed.
+     */
+    CHECK_EQ(b_change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
+    CHECK_EQ(b_change.XPath<std::string>("./Reversed/@TimeStamp"), std::string(""));
+
+    std::remove(path);
+}
+
+void test_journal_undo_add()
+{
+    banner("ActionAdd::Undo");
+
+    const char* path = "/tmp/xmlcls_test_undo_add.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/></Root>"));
+    doc.CreateJournal(path);
+
+    XmlNode root = doc.XPath<std::vector<XmlNode>>("/Root")[0];
+    XmlNode b = root.AddChild("<B>added</B>");
+
+    CHECK(!b.err);
+    CHECK(!doc.JRNL->err);
+
+    const std::string jid = b.XPath<std::string>("@JID");
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Add"));
+    CHECK_EQ(change.XPath<std::string>("@JID"), jid);
+    CHECK(doc.JRNL->jid_map[jid] == b.node);
+
+    doc.JRNL->Undo(change);
+
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
+    CHECK(doc.JRNL->jid_map[jid] == nullptr);
+    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+
+    std::remove(path);
+}
+
 } // namespace
 
 int main()
@@ -703,10 +957,15 @@ int main()
     test_save_and_reload();
     test_xmljrnl_constructor_and_active_release();
     test_journal_log_modify_jid();
-    test_journal_undo_modify();
     test_journal_aware_mutations();
     test_journal_undo_modify();
     test_journal_delete();
+    test_journal_undo_delete_middle();
+    test_journal_undo_delete_first();
+    test_journal_undo_delete_last();
+    test_journal_undo_delete_only_child();
+    test_journal_undo_delete_parent_conflict();
+    test_journal_undo_add();
 
     xmlCleanupParser();
 

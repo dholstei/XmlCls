@@ -33,6 +33,17 @@ class XmlDoc;    // Forward declaration for doc_map
 class XmlJrnl;
 class XmlNode;
 
+static std::string CurrentIsoTimestampUTC()
+{
+    std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+
+    char buffer[32]{};
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buffer;
+}
+
 /**
 * @class XmlDoc
 * @brief Owns an XML document and its associated XPath context.
@@ -396,4 +407,80 @@ private:
      * open child Release exists, the current node is returned.
      */
     XmlNode FindActiveRelease(XmlNode start, std::vector<int>& path);
+};
+
+struct Action {
+    XmlJrnl& jrnl;
+    XmlNode action_node;      // <Change/> node in JRNL
+    Error* err = nullptr;
+
+    std::string type;
+    std::string jid;
+
+    Action(XmlJrnl& j) : jrnl(j) {}
+    Action(XmlJrnl& j, XmlNode action) : jrnl(j), action_node(action) {}
+
+    virtual ~Action() = default;
+
+    virtual void Undo() = 0;
+
+    void Record()
+    {
+        if (type.empty() || jid.empty()) {
+            err = new Error{lvl::ERR, "Cannot record journal action: Type or JID is missing", ""};
+            return;
+        }
+
+        std::string xml =
+            "\n<Change Type=\"" + type + "\""
+            " TimeStamp=\"" + CurrentIsoTimestampUTC() + "\""
+            " JID=\"" + jid + "\">"
+            "<Reversed TimeStamp=\"\" Value=\"false\"/>"
+            "</Change>\n";
+
+        action_node = jrnl.active_release.AddChild(xml);
+
+        if (action_node.err)
+            err = action_node.err;
+    }
+
+
+protected:
+    void ReverseStamp();
+    void Conflict(const std::string& msg, XmlNode cause)
+    {
+        err = new Error{lvl::INFO, "Conflict: " + msg, cause.node ? cause.GetPath() : action_node.GetPath()};
+    }
+
+};
+
+struct ActionModify : public Action {
+    XmlNode node;
+    std::string oldXML;
+
+    ActionModify(XmlJrnl& j, XmlNode n, const std::string& old);
+    ActionModify(XmlJrnl& j, XmlNode action);
+
+    void Record();
+    void Undo() override;
+};
+
+struct ActionDelete : public Action {
+    XmlNode node;
+
+    ActionDelete(XmlJrnl& j, XmlNode n);
+    ActionDelete(XmlJrnl& j, XmlNode action, bool);
+
+    void Record();
+    void Undo() override;
+};
+
+struct ActionAdd : public Action {
+    XmlNode node;
+
+    ActionAdd(XmlJrnl& j, XmlNode n);
+    ActionAdd(XmlJrnl& j, XmlNode action, bool);
+
+    void Record();
+    void Undo() override;
 };
