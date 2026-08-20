@@ -468,6 +468,228 @@ void test_journal_log_modify_jid()
     std::remove("/tmp/xmlcls_test_jid.jrnl.xml");
 }
 
+void test_journal_undo_modify()
+{
+    banner("XmlJrnl::Undo Modify");
+
+    const char* path = "/tmp/xmlcls_test_undo_modify.jrnl.xml";
+
+    XmlDoc doc( std::string( "<Root>" "  <A>original</A>" "</Root>" ) );
+
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+
+    CHECK(!a.XPath<bool>("./@JID"));
+
+    /*
+     * parse() should cause LogModify() to assign a JID and preserve
+     * that identity on the replacement node.
+     */
+    a.parse("<A changed=\"true\">modified</A>");
+
+    CHECK(!a.err);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ( a.XPath<std::string>("."), std::string("modified") );
+    CHECK_EQ( a.XPath<std::string>("@changed"), std::string("true") );
+
+    const std::string jid = a.XPath<std::string>("@JID");
+
+    CHECK(!jid.empty());
+    CHECK_EQ(jid.size(), std::size_t{16});
+
+    auto it = doc.JRNL->jid_map.find(jid);
+
+    CHECK(it != doc.JRNL->jid_map.end());
+
+    if (it != doc.JRNL->jid_map.end())
+        CHECK(it->second == a.node);
+
+    /*
+     * Verify the journal transaction.
+     */
+    XmlNode change = doc.JRNL->active_release     .XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ( change.XPath<std::string>("@Type"), std::string("Modify") );
+    CHECK_EQ( change.XPath<std::string>("@JID"), jid );
+    CHECK_EQ( change.XPath<std::string>("./Reversed/@Value"), std::string("false") );
+
+    /*
+     * Undo the specific Modify transaction.
+     */
+    doc.JRNL->Undo(change);
+
+    CHECK(!doc.JRNL->err);
+
+    /*
+     * Undo replaces the physical xmlNodePtr, so fetch the node again.
+     */
+    XmlNode restored = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+
+    CHECK_EQ( restored.XPath<std::string>("."), std::string("original") );
+    CHECK(!restored.XPath<bool>("./@changed"));
+
+    /*
+     * Logical identity must survive the round trip.
+     */
+    CHECK_EQ( restored.XPath<std::string>("@JID"), jid );
+
+    auto restored_it = doc.JRNL->jid_map.find(jid);
+
+    CHECK(restored_it != doc.JRNL->jid_map.end());
+
+    if (restored_it != doc.JRNL->jid_map.end())
+        CHECK(restored_it->second == restored.node);
+
+    /*
+     * Journal transaction remains, but is marked reversed.
+     */
+    CHECK_EQ( change.XPath<std::string>("./Reversed/@Value"), std::string("true") );
+
+    const std::string reversed_ts = change.XPath<std::string>("./Reversed/@TimeStamp");
+
+    CHECK(!reversed_ts.empty());
+    CHECK(reversed_ts.find('T') != std::string::npos);
+    CHECK(reversed_ts.back() == 'Z');
+
+    std::remove(path);
+}
+
+void test_journal_delete()
+{
+    banner("XmlNode::Delete with journal");
+
+    const char* path = "/tmp/xmlcls_test_delete.jrnl.xml";
+
+    XmlDoc doc(std::string(
+        "<Root>"
+        "  <A/>"
+        "  <B>delete me</B>"
+        "  <C/>"
+        "</Root>"
+    ));
+
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode root = doc.XPath<std::vector<XmlNode>>("/Root")[0];
+    XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Root/B")[0];
+    XmlNode c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
+
+    /*
+     * None of these should require a JID before Delete().
+     */
+    CHECK(!root.XPath<bool>("./@JID"));
+    CHECK(!a.XPath<bool>("./@JID"));
+    CHECK(!b.XPath<bool>("./@JID"));
+    CHECK(!c.XPath<bool>("./@JID"));
+
+    /*
+     * Delete() should assign JIDs to the parent and all siblings/children
+     * before LogDelete() records the transaction.
+     */
+    b.Delete();
+
+    print_error("Delete(B)", b.err);
+    CHECK(!b.err);
+    CHECK(!doc.JRNL->err);
+
+    /*
+     * B is gone from the live DOM.
+     */
+    CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
+    CHECK(b.node == nullptr);
+    CHECK(b.doc == nullptr);
+
+    /*
+     * Re-fetch surviving nodes because their DOM attributes were modified.
+     */
+    root = doc.XPath<std::vector<XmlNode>>("/Root")[0];
+    a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
+
+    const std::string root_jid = root.XPath<std::string>("@JID");
+    const std::string a_jid = a.XPath<std::string>("@JID");
+    const std::string c_jid = c.XPath<std::string>("@JID");
+
+    CHECK(!root_jid.empty());
+    CHECK(!a_jid.empty());
+    CHECK(!c_jid.empty());
+
+    CHECK_EQ(root_jid.size(), std::size_t{16});
+    CHECK_EQ(a_jid.size(), std::size_t{16});
+    CHECK_EQ(c_jid.size(), std::size_t{16});
+
+    /*
+     * The deletion transaction itself preserves B's JID.
+     */
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Deletion"));
+    std::string xml = change.XML();
+    printf("Deletion transaction XML:\n%s\n", xml.c_str());
+
+    const std::string b_jid = change.XPath<std::string>("@JID");
+
+    CHECK(!b_jid.empty());
+    CHECK_EQ(b_jid.size(), std::size_t{16});
+
+    /*
+     * Parent and immediate sibling identities describe B's original slot.
+     */
+    CHECK_EQ(change.XPath<std::string>("./Parent/@JID"), root_jid);
+    CHECK_EQ(change.XPath<std::string>("./Before/@JID"), a_jid);
+    CHECK_EQ(change.XPath<std::string>("./After/@JID"), c_jid);
+
+    /*
+     * All four JIDs must remain reserved by the journal.
+     */
+    CHECK(doc.JRNL->jid_map.find(root_jid) != doc.JRNL->jid_map.end());
+    CHECK(doc.JRNL->jid_map.find(a_jid) != doc.JRNL->jid_map.end());
+    CHECK(doc.JRNL->jid_map.find(b_jid) != doc.JRNL->jid_map.end());
+    CHECK(doc.JRNL->jid_map.find(c_jid) != doc.JRNL->jid_map.end());
+
+    CHECK(doc.JRNL->jid_map[root_jid] == root.node);
+    CHECK(doc.JRNL->jid_map[a_jid] == a.node);
+    CHECK(doc.JRNL->jid_map[c_jid] == c.node);
+
+    /*
+     * Deleted identity remains reserved but has no live source node.
+     */
+    CHECK(doc.JRNL->jid_map[b_jid] == nullptr);
+
+    /*
+     * Saved XML must contain the deleted logical node, including its JID.
+     */
+    const std::string encoded = change.XPath<std::string>("./Node");
+    CHECK(!encoded.empty());
+
+    const std::string deleted_xml = base64_decode(encoded);
+
+    CHECK(deleted_xml.find("<B") != std::string::npos);
+    CHECK(deleted_xml.find("delete me") != std::string::npos);
+    CHECK(deleted_xml.find("JID=\"" + b_jid + "\"") != std::string::npos);
+
+    /*
+     * New deletion transaction begins unreversed.
+     */
+    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
+
+    print_xml("source after journaled Delete(B)", doc);
+    print_xml("journal after journaled Delete(B)", doc.JRNL);
+
+    std::remove(path);
+}
+
 } // namespace
 
 int main()
@@ -481,7 +703,10 @@ int main()
     test_save_and_reload();
     test_xmljrnl_constructor_and_active_release();
     test_journal_log_modify_jid();
+    test_journal_undo_modify();
     test_journal_aware_mutations();
+    test_journal_undo_modify();
+    test_journal_delete();
 
     xmlCleanupParser();
 

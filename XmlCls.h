@@ -32,9 +32,6 @@ typedef Error* ErrorPtr;
 class XmlDoc;    // Forward declaration for doc_map
 class XmlJrnl;
 class XmlNode;
-extern std::mutex doc_map_mtx;
-extern std::map<xmlDocPtr, XmlDoc*> doc_map;
-extern std::map<xmlDocPtr, XmlJrnl*> jrnl_map;
 
 /**
 * @class XmlDoc
@@ -55,7 +52,6 @@ public:
     ErrorPtr err = nullptr;
     xmlXPathContextPtr ctxt = nullptr;
     XmlJrnl* JRNL = nullptr;
-    mutable std::recursive_mutex mtx;
 
     xmlDocPtr const doc;
 
@@ -65,7 +61,7 @@ public:
 
     XmlDoc(xmlDocPtr doc) noexcept
         : doc(doc) {
-        doc_map[doc] = this;
+        doc->_private = this;
     }
 
     XmlDoc(XmlDoc&&) = delete;
@@ -137,6 +133,8 @@ public:
 
     void CreateJournal(const char* filename, std::string XML = "");
 
+    xmlXPathContextPtr XPathContext();
+
 private:
 
     void clear() ;
@@ -163,10 +161,10 @@ public:
         if (!node) { err = new Error{lvl::ERR, "Invalid/NULL node pointer", ""}; return; }
         this->node = node;
         doc = node ? node->doc : nullptr;
-        if (doc) {
-            auto it = jrnl_map.find(doc);
-            if (it != jrnl_map.end()) JRNL = it->second;
-        }
+
+        XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
+
+        if (owner) JRNL = owner->JRNL;
         else { err = new Error{lvl::ERR, "Node has no associated document", ""}; }
     }
     ~XmlNode(){}
@@ -258,6 +256,9 @@ public:
         return result;
     }
 
+    std::string JID();
+    void JID(std::string jid);
+
 /**
     * @brief Evaluate an XPath expression relative to this node.
     * @tparam T Desired return type.
@@ -268,8 +269,6 @@ public:
     */
     template <typename T> T XPath(std::string query);
 };
-
-xmlXPathContextPtr GetXPathContext(xmlDocPtr doc, ErrorPtr &err);
 
 /**
  * @class XmlJrnl
@@ -381,10 +380,7 @@ public:
     void RefreshActiveRelease();
 
     void BuildJIDMap();
-    
-    std::string NewJID();
 
-    std::string JID(xmlNodePtr node);
     std::string JID();
 
     // std::string ReleaseString() const;
