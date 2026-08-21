@@ -5,7 +5,7 @@
 
 Key characteristics:
 - No exception throwing; all failures are reported through an explicit `Error` structure.
-- RAII‑style management of `libxml2` objects (`xmlDocPtr`, `xmlNodePtr`, `xmlXPathContextPtr`).
+- Lightweight C++ wrappers around `libxml2` document, node, and XPath objects.
 - Strongly‑typed XPath accessors using templates.
 - Optional XML mutation journaling through `XmlJrnl`.
 - Minimal policy assumptions, making it suitable for console, GUI, embedded‑host, or service environments.
@@ -14,7 +14,7 @@ The design aligns well with systems that require deterministic behavior, auditab
 
 ## Files
 - **XmlCls.h** – Public API declarations: classes, methods, and inline helpers.
-- **XmlCls.cpp** – Implementations of parsing, XPath evaluation, and lifecycle management.
+- **XmlCls.cpp** – Parsing, XPath evaluation, mutation, journaling, and undo implementations.
 
 ## Dependencies
 - **libxml2** (headers and library)
@@ -30,147 +30,283 @@ On Windows, libxml2 must be provided explicitly (vcpkg, Conan, or a locally buil
 ## Core Concepts
 
 ### Explicit Error Handling
-All operations update an `Error` member rather than throwing exceptions. Callers are expected to check and handle errors explicitly, which supports:
-- Deterministic control flow
-- Compatibility with safety‑critical or embedded coding standards
-- Easy redirection of error reporting (console, GUI, logging framework, etc.)
 
-### XPath as the Primary Query Mechanism
-XPath expressions are treated as first‑class inputs. Templated helpers convert XPath results directly into C++ scalar or container types.
+`XmlCls` does not use exceptions for normal library failures. Operations report
+status through an `Error` pointer containing a severity level, message, and
+optional diagnostic data.
 
-## Public API Documentation (docsys‑style)
+Journal conflicts are deliberately distinguished from implementation failures.
+An undo that cannot be applied because of a later, incompatible journal
+transaction reports `lvl::INFO` with a `"Conflict"` message. Conflict resolution
+is policy and is therefore left to the consuming editor, GUI, or application.
 
-### Class: `XmlDoc`
+### XPath as the Primary Navigation Mechanism
 
-**Purpose**  
-Encapsulates an XML document and its associated XPath context. Responsible for document load, lifetime management, and XPath context caching.
+XPath is the primary mechanism for both document queries and structural
+navigation. This avoids manual libxml2 sibling/child traversal where text,
+CDATA, comments, and other non-element nodes can obscure the XML structure of
+interest.
 
-**Responsibilities**
-- Parse XML from file or memory
-- Maintain a shared XPath context per document
-- Own and release the underlying `xmlDocPtr`
+`XmlDoc::XPath<T>()` and `XmlNode::XPath<T>()` provide typed results for:
 
-**Key Members**
-- `xmlDocPtr doc` – Underlying libxml2 document handle
-- `Error err` – Last error state for operations on the document
+- `std::string`
+- `double`
+- `int`
+- `bool`
+- `std::vector<XmlNode>`
 
-**Key Methods**
-- `XmlDoc(const std::string& filename)`  
-  Loads and parses an XML document from disk.
-
-- `XmlDoc(const char* buffer, size_t size)`  
-  Parses an XML document from an in‑memory buffer.
-
-- `~XmlDoc()`  
-  Releases the document and associated XPath context.
-
-- `xmlDocPtr get()`  
-  Returns the raw libxml2 document pointer.
-
----
-
-### Class: `XmlNode`
-
-**Purpose**  
-Represents a single XML node associated with an owning `XmlDoc`. Provides scoped XPath queries relative to the node.
-
-**Responsibilities**
-- Safe access to `xmlNodePtr`
-- XPath evaluation within the node’s context
-- Typed extraction of attributes, text, and child nodes
-
-**Key Members**
-- `xmlNodePtr node` – Underlying libxml2 node
-- `XmlDoc* owner` – Owning document
-- `Error err` – Last error state
-
-**Key Methods**
-- `XmlNode(xmlNodePtr n, XmlDoc* d)`  
-  Constructs a wrapper around an existing libxml2 node.
-
-- `std::string name() const`  
-  Returns the node name.
-
-- `template<typename T> XPath(const std::string& expr)`  
-  Evaluates an XPath expression relative to this node and converts the result to type `T`.
-
----
-
-### Class: `XmlJrnl`
-
-**Purpose**  
-Extends `XmlDoc` with an XML-based mutation journal for tracking reversible changes to another XML document.
-
-A journal is organized as nested `<Release>` nodes. Mutations are appended beneath the deepest currently open release. The active release path is retained as a vector of integers; for example `{0, 2, 1}` represents Release `0.2.1`.
-
-**Key Members**
-- `std::vector<int> rel_no` – Numeric path of the active release.
-- `XmlNode active_release` – Deepest currently open `<Release>` node.
-
-**Construction**
-- `XmlJrnl(const char* filename)`  
-  Opens an existing journal file and resolves its active release.
-
-- `XmlJrnl(const std::string content)`  
-  Constructs a journal from XML text and resolves its active release.
-
-`OpenJournal()` and `CreateJournal()` are deleted for `XmlJrnl` itself so that journals cannot recursively journal journals.
-
-**Mutation Logging**
-- `LogAdd(XmlNode& added)`  
-  Records addition of a node.
-
-- `LogModify(XmlNode& node, const std::string& oldXML)`  
-  Records modification of a node, preserving the previous XML representation so the change can be reversed.
-
-- `LogDelete(XmlNode& node)`  
-  Records deletion of a node. This must occur before the underlying `xmlNodePtr` is unlinked or freed so its path and XML content remain available.
-
-Mutation records are written beneath `active_release` and include a UTC timestamp plus information identifying the affected XML location. `XmlNode::GetPath()` uses `xmlGetNodePath()` to provide the node's XPath within the document.
-
-**Release Management**
-- `RefreshActiveRelease()`  
-  Re-scans the journal and selects the deepest nested release whose `Close` attribute is empty.
-
-- `FindActiveRelease(XmlNode start, std::vector<int>& path)`  
-  Recursively walks open nested releases while building `rel_no`.
-
-**Undo**
-- `Undo(XmlNode action_node)`  
-  Applies the inverse of a previously recorded mutation.
-
-### XPath Result Conversion
-
-**Purpose**  
-Provide strongly typed access to XPath results while centralizing conversion logic.
-
-`XmlDoc::XPath<T>()` and `XmlNode::XPath<T>()` use the requested C++ template type to select the corresponding libxml2 XPath result conversion.
-
-Supported conversions include:
-- `std::string` for XPath string results
-- `double` for XPath numeric results
-- `int` for numeric results converted to integer
-- `bool` for XPath boolean results
-- `std::vector<XmlNode>` for XPath node sets
-
-Typical usage:
+For scalar requests, a node-set resolving to one node is implicitly converted
+using the corresponding XPath value of that node. For example:
 
 ```cpp
-std::string name  = doc.XPath<std::string>("string(/Config/@Name)");
-                  = doc.XPath<std::string>("/Config/@Name");  //  if resolves to single node, the XPath `string(.)` function applied
-double voltage    = doc.XPath<double>("number(/Config/@Voltage)");
-                  = doc.XPath<double>("/Config/@Voltage");  //  if resolves to single node, the XPath `number(.)` function applied
-int count         = doc.XPath<int>("count(/Config/Item)");
-bool enabled      = doc.XPath<bool>("boolean(/Config/@Enabled)");
-                  = doc.XPath<bool>("/Config/@Enabled");    //  if resolves to single node, the XPath `boolean(.)` function applied
-auto nodes        = doc.XPath<std::vector<XmlNode>>("/Config/Item");
+std::string name = doc.XPath<std::string>("/Config/@Name");
+double voltage   = doc.XPath<double>("/Config/@Voltage");
+bool enabled     = doc.XPath<bool>("/Config/@Enabled");
 ```
 
-The conversion is implicit in the sense that callers specify only the desired C++ result type; the XPath implementation performs the libxml2 result-type extraction and C++ conversion internally.
+The caller therefore specifies the desired C++ type rather than repeatedly
+embedding `string(.)`, `number(.)`, or `boolean(.)` conversion logic.
 
-For node sets, the returned `XmlNode` objects are lightweight wrappers around nodes owned by the source document. They retain association with the source document and, when journaling is enabled, inherit the document's active `XmlJrnl`.
+### Canonical `XmlDoc` and Transient `XmlNode`
 
-Invalid conversions, malformed expressions, or incompatible XPath result types populate the `Error` state instead of throwing.
+An `XmlDoc` is the canonical C++ wrapper for one libxml2 DOM. The association is
+stored in `xmlDoc::_private`, allowing an `XmlNode` constructed from an
+`xmlNodePtr` to recover its owning `XmlDoc` without a global document map.
+
+`XmlNode` is intentionally lightweight and transient. It does not own the
+underlying node and can be constructed temporarily for XPath evaluation,
+serialization, or mutation.
+
+`XmlNode::GetPath()` remains available for diagnostics, but structural XPath is
+not used as persistent journal identity because a path can change as the DOM is
+modified.
+
+## Mutation Journaling
+
+### `XmlJrnl`
+
+`XmlJrnl` extends `XmlDoc` with a journal DOM permanently associated with one
+canonical source `XmlDoc`:
+
+```cpp
+XmlDoc& source_doc;
+```
+
+The reference cannot be rebound after construction. This prevents journal
+operations from accidentally being applied to a different open DOM.
+
+A journal is organized as nested `<Release>` nodes. `active_release` identifies
+the deepest currently open release and `rel_no` contains its numeric path; for
+example `{0, 2, 1}` represents Release `0.2.1`.
+
+`OpenJournal()` and `CreateJournal()` are deleted on `XmlJrnl` itself so that a
+journal cannot recursively journal another journal.
+
+### Journal IDs (`JID`)
+
+When journaling is enabled, logical XML nodes participating in transactions are
+identified by a persistent hexadecimal `JID` attribute.
+
+```xml
+<Item JID="e3e2ebd167168d3c"/>
+```
+
+JIDs need only be unique within a journal; they are not intended as globally
+unique identifiers. `XmlJrnl` maintains:
+
+```cpp
+std::map<std::string, xmlNodePtr> jid_map;
+```
+
+A live JID maps directly to its current `xmlNodePtr`. A deleted logical node
+remains reserved in the map with a `nullptr` value so retained journal history
+cannot accidentally reuse its identity.
+
+`XmlNode::JID()` returns an existing JID or creates and registers one.
+`XmlNode::JID(std::string jid)` propagates an existing logical identity to a new
+physical `xmlNodePtr`, such as after `parse()` or `Undo()` replaces a node.
+
+`BuildJIDMap()` reconstructs the live map directly with XPath over `//@JID`;
+manual DOM traversal is unnecessary.
+
+### Action Model
+
+Journal transactions are represented by a small action hierarchy:
+
+```text
+Action
+├── ActionModify
+├── ActionDelete
+└── ActionAdd
+```
+
+`Action` owns mechanics common to every transaction:
+
+- creation of the `<Change>` node,
+- `Type`, `TimeStamp`, and `JID`,
+- the initial `<Reversed TimeStamp="" Value="false"/>` state,
+- reversal timestamping,
+- common `lvl::INFO` conflict reporting.
+
+Each specialization records only the state required by its mutation and
+implements its inverse operation.
+
+A typical journal record is:
+
+```xml
+<Change Type="Modify"
+        TimeStamp="..."
+        JID="e3e2ebd167168d3c">
+    <Reversed TimeStamp="" Value="false"/>
+    ...
+</Change>
+```
+
+### `ActionModify`
+
+A Modify transaction records the logical node JID, its parent JID, and the
+Base64-encoded XML that existed before the modification:
+
+```xml
+<Parent JID="..."/>
+<Node Encoding="Base64">...</Node>
+```
+
+`Undo()` restores the previous serialized state while retaining the same JID.
+Because replacement creates a new `xmlNodePtr`, `jid_map` is updated to point to
+the restored physical node.
+
+A missing or structurally incompatible parent is treated as a journal conflict,
+not a programming error.
+
+### `ActionDelete`
+
+A Deletion transaction records enough structural context to restore the node to
+its previous element position:
+
+```xml
+<Parent JID="..."/>
+<Before JID="..."/>
+<After JID="..."/>
+<Node Encoding="Base64">...</Node>
+```
+
+`Before` and `After` are omitted when the deleted node had no corresponding
+element sibling.
+
+Before deletion, the parent and its element children are assigned JIDs. The
+deleted node's JID remains reserved with a null live mapping.
+
+`Undo()` validates the recorded parent and sibling relationships before
+reinsertion. It supports restoration of middle, first, last, and only-child
+nodes. If later transactions have removed or invalidated the required
+structural context, the operation returns an INFO-level conflict and leaves the
+transaction unreversed.
+
+### `ActionAdd`
+
+An Add transaction records the new logical node JID and its parent JID.
+
+Undoing an Add verifies that the live node still belongs to the recorded parent,
+removes it, changes its `jid_map` entry to `nullptr`, and stamps the transaction
+as reversed.
+
+### Undo Dispatch
+
+`XmlJrnl::Undo(XmlNode action_node)` is intentionally a dispatcher rather than a
+large mutation implementation. It selects the action specialization from the
+journal `@Type` and delegates the inverse operation.
+
+The overloads are:
+
+```cpp
+void Undo();
+void Undo(XmlNode action_node);
+void Undo(std::vector<XmlNode> action_nodes);
+```
+
+`Undo()` selects the most recent unreversed action in the active release.
+The vector overload processes actions in reverse order.
+
+An already reversed action is a no-op.
+
+The `<Reversed>` state is changed only after the DOM operation succeeds:
+
+```xml
+<Reversed TimeStamp="2026-..." Value="true"/>
+```
+
+A failed or conflicted undo remains:
+
+```xml
+<Reversed TimeStamp="" Value="false"/>
+```
+
+## Public API Summary
+
+### `XmlDoc`
+
+`XmlDoc` parses and represents one canonical XML DOM, caches its XPath context,
+and optionally owns an attached `XmlJrnl`.
+
+Typical operations include:
+
+```cpp
+XmlDoc doc("config.xml");
+
+auto nodes = doc.XPath<std::vector<XmlNode>>("/Config/Subsystem");
+std::string name = doc.XPath<std::string>("/Config/@Name");
+
+doc.CreateJournal("config.jrnl.xml");
+doc.Save();
+```
+
+Copy and move operations are disabled so that the canonical DOM association
+cannot silently change.
+
+### `XmlNode`
+
+`XmlNode` provides relative XPath queries and mutation methods around an
+existing `xmlNodePtr`.
+
+Important operations include:
+
+```cpp
+node.XPath<T>(query);
+node.XML();
+node.parse(xml);
+node.AddChild(xml);
+node.Delete();
+node.GetPath();
+node.JID();
+node.JID(jid);
+```
+
+When a node belongs to a journal-enabled document, `parse()`, `AddChild()`, and
+`Delete()` automatically generate the corresponding journal transaction.
+
+### `XmlJrnl`
+
+Important state and operations include:
+
+```cpp
+XmlDoc& source_doc;
+std::vector<int> rel_no;
+XmlNode active_release;
+std::map<std::string, xmlNodePtr> jid_map;
+
+void LogAdd(XmlNode& node);
+void LogModify(XmlNode& node, const std::string& oldXML);
+void LogDelete(XmlNode& node);
+
+void Undo();
+void Undo(XmlNode action_node);
+void Undo(std::vector<XmlNode> action_nodes);
+
+void RefreshActiveRelease();
+void BuildJIDMap();
+std::string JID();
+```
 
 ## Usage Example
 
@@ -178,25 +314,70 @@ Invalid conversions, malformed expressions, or incompatible XPath result types p
 XmlDoc doc("config.xml");
 HANDLE_ERR(doc.err);
 
-XmlNode root = doc.XPath<std::vector<XmlNode>>("/Config")[0];
-HANDLE_ERR(root.err);
+doc.CreateJournal("config.jrnl.xml");
+HANDLE_ERR(doc.JRNL->err);
 
-int rate = root.XPath<int>("number(@Rate)");
-bool enabled = root.XPath<bool>("boolean(@Enabled)");
-std::string name = root.XPath<std::string>("string(@Name)");
+XmlNode subsystem =
+    doc.XPath<std::vector<XmlNode>>("/Config/Subsystem[@Name='Cooling']")[0];
 
-HANDLE_ERR(root.err);
+std::string name = subsystem.XPath<std::string>("@Name");
+int channels = subsystem.XPath<int>("@Channels");
+
+subsystem.AddChild("<Channel Name=\"Return\"/>");
+HANDLE_ERR(subsystem.err);
 ```
 
+The added node is assigned a JID and an Add transaction is written beneath the
+active journal release.
+
 ## Threading Notes
-- `libxml2` global initialization must be performed once at program start if used in a multi‑threaded environment.
-- Individual `XmlDoc` instances are not internally synchronized.
+
+The current implementation caches one XPath context per `XmlDoc`; operations
+against that shared context should therefore be treated as serialized.
+
+A future read-only use case could allow multiple worker threads to share an
+immutable `xmlDocPtr` while using independent XPath contexts. A bounded pool of
+contexts is one possible implementation if XPath throughput ever justifies the
+additional synchronization and lifecycle complexity.
+
+DOM mutation and simultaneous XPath traversal require document-level
+synchronization. Internal synchronization is not currently part of the public
+`XmlCls` contract.
 
 ## Design Rationale
-- Avoids implicit control flow via exceptions
-- Encourages explicit, auditable error paths
-- Keeps XML parsing and schema semantics outside of compiled code when possible
+
+- Explicit error propagation rather than exception-driven control flow.
+- XPath-centric navigation instead of manual libxml2 structural traversal.
+- Lightweight transient `XmlNode` wrappers.
+- Canonical `XmlDoc` identity through libxml2 `_private`.
+- Persistent logical node identity through journal-local JIDs.
+- Separation of common transaction mechanics from action-specific behavior.
+- INFO-level conflicts distinguish incompatible journal history from software
+  faults.
+- Conflict resolution remains application policy rather than being embedded in
+  the XML infrastructure layer.
+
+## Current Validation
+
+The journal implementation has regression coverage for:
+
+- Modify recording and undo.
+- JID preservation across node replacement.
+- Delete recording and restoration.
+- First, middle, last, and only-child deletion undo.
+- Parent-deletion conflict detection with `lvl::INFO`.
+- Add recording and undo.
+- Reversal state and timestamp behavior.
+
+At the current development checkpoint, the XmlCls test suite reports:
+
+```text
+249 check(s) passed.
+SUCCESS: All XmlCls tests passed.
+```
 
 ## Notes
-This module is intended as infrastructure code. It deliberately avoids policy decisions about logging, UI notifications, or recovery strategies, delegating those responsibilities to the caller.
 
+`XmlCls` is intended as infrastructure code. It deliberately avoids policy
+decisions about logging, UI notifications, and journal conflict resolution.
+Those responsibilities belong to the consuming application.

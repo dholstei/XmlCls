@@ -1,6 +1,12 @@
 #include "XmlCls.h"
 #include "base64.h"
 
+/**
+ * @brief Convert the current libxml2 global/thread error into XmlCls error state.
+ *
+ * Intended for typed XPath specializations where the default return value must
+ * match the requested C++ type.
+ */
 #define XML_ERROR(T, data) \
     do { \
         xmlError e = *xmlGetLastError(); \
@@ -640,7 +646,7 @@ void XmlNode::Delete()
 #define JRNL_CHECK_NODE(N)                                              \
     do {                                                                \
         if (!(N).node || (N).doc != source_doc.doc) {                  \
-            err = new Error{ lvl::ERR, "XmlNode does not belong to this journal's source DOM", (N).node ? (N).GetPath() : std::string() };                                                          \
+            err = new Error{ lvl::ERR, "XmlNode does not belong to this journal's source DOM", (N).node ? (N).GetPath() : std::string() }; \
             return;                                                     \
         }                                                               \
     } while (0)
@@ -824,6 +830,14 @@ std::string XmlJrnl::JID()
             return jid;
     }
 }
+
+/* -------------------------------------------------------------------------
+ * Journal Action implementations
+ *
+ * Action::Record()/ReverseStamp()/Conflict() contain transaction mechanics
+ * common to all actions.  ActionModify, ActionDelete, and ActionAdd contain
+ * only the payload and inverse operation specific to their mutation type.
+ * ------------------------------------------------------------------------- */
 
 ActionModify::ActionModify(XmlJrnl& j, XmlNode n, const std::string& old)
     : Action(j), node(n), oldXML(old)

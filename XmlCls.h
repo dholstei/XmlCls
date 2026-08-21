@@ -1,9 +1,17 @@
-/*
-* XmlCls.h
-*
-* Lightweight C++ wrapper for libxml2 providing explicit-error, XPath-centric
-* access to XML documents and nodes.
-*/
+/**
+ * @file XmlCls.h
+ * @brief XPath-centric C++ wrapper for libxml2 with optional mutation journaling.
+ *
+ * XmlCls provides lightweight XmlDoc and XmlNode wrappers around libxml2.
+ * Structural selection is expressed primarily with XPath while mutations are
+ * performed through the wrapper methods.  Errors are reported explicitly
+ * through Error pointers rather than exceptions.
+ *
+ * When journaling is enabled, XmlJrnl assigns persistent JIDs to logical XML
+ * nodes and records Add, Modify, and Deletion actions that can subsequently be
+ * reversed.  JIDs remain stable even when a mutation replaces the underlying
+ * xmlNodePtr.
+ */
 
 #include <stdio.h>
 #include <map>
@@ -12,24 +20,26 @@
 #include <libxml/xpath.h>
 #include <libxml/xpathInternals.h>
 #include <libxml/xmlerror.h>
-#include <mutex>
+#include <ctime>
 #include <random>
 #include <cstdint>
 
 #include "string.h"
 
 /**
-* @struct Error
-* @brief Encapsulates error state for XmlCls operations.
-*
-* This structure is updated by XmlDoc and XmlNode methods instead of throwing
-* exceptions. Callers are expected to inspect and handle errors explicitly.
-*/
+ * @struct Error
+ * @brief Explicit error/status state used by XmlCls operations.
+ *
+ * XmlCls does not throw exceptions for normal library failures.  Methods set an
+ * Error pointer which callers are expected to inspect.  Journal conflicts that
+ * are valid consequences of prior transactions are reported at lvl::INFO rather
+ * than as implementation errors.
+ */
 #include "Error.h"
 typedef Error* ErrorPtr;
 #include "base64.h"
 
-class XmlDoc;    // Forward declaration for doc_map
+class XmlDoc;
 class XmlJrnl;
 class XmlNode;
 
@@ -45,26 +55,30 @@ static std::string CurrentIsoTimestampUTC()
 }
 
 /**
-* @class XmlDoc
-* @brief Owns an XML document and its associated XPath context.
-*
-* XmlDoc is responsible for parsing XML from files or memory buffers and for
-* managing the lifetime of the underlying libxml2 xmlDocPtr and XPath context.
-*
-* Design notes:
-* - No exceptions are thrown
-* - All failures are reported through the @ref err member
-* - XPath contexts are cached per document
-*/
+ * @class XmlDoc
+ * @brief Canonical wrapper for one libxml2 document.
+ *
+ * Each XmlDoc is permanently associated with one xmlDocPtr.  Copy and move
+ * operations are disabled so that document identity cannot change during the
+ * wrapper lifetime.  The canonical XmlDoc pointer is stored in xmlDoc::_private,
+ * allowing transient XmlNode wrappers to recover their owning document and
+ * journal without global lookup tables.
+ *
+ * XmlDoc caches an XPath context for the document and optionally owns an
+ * attached XmlJrnl.  Failures are reported through @ref err.
+ *
+ * @note The current implementation frees the cached XPath context in clear().
+ *       The underlying xmlDocPtr is intentionally not freed there at present.
+ */
 class XmlDoc
 {
 
 public:
-    ErrorPtr err = nullptr;
-    xmlXPathContextPtr ctxt = nullptr;
-    XmlJrnl* JRNL = nullptr;
+    ErrorPtr err = nullptr;              ///< Last error/status reported by this wrapper.
+    xmlXPathContextPtr ctxt = nullptr;   ///< Cached XPath context for this DOM.
+    XmlJrnl* JRNL = nullptr;             ///< Optional mutation journal attached to this DOM.
 
-    xmlDocPtr const doc;
+    xmlDocPtr const doc;                  ///< Immutable identity of the wrapped libxml2 DOM.
 
     XmlDoc() : doc(nullptr) {}
     XmlDoc(const XmlDoc&) = delete;
@@ -87,16 +101,18 @@ public:
     XmlDoc(const char *filename);
 
    /**
-    * @brief Construct an XmlDoc from an in-memory buffer.
-    * @param content Pointer to XML text.
-    * @param length Size of the buffer in bytes.
+    * @brief Construct an XmlDoc from an XML string.
+    * @param content Complete XML document text.
+    *
+    * On success, xmlDoc::_private is set to this canonical XmlDoc wrapper.
     */
     XmlDoc(const std::string content);
 
    /**
-    * @brief Destructor.
+    * @brief Destroy the wrapper and release wrapper-owned resources.
     *
-    * Releases the underlying xmlDocPtr and any associated XPath context.
+    * The cached XPath context and attached journal are released.  The current
+    * implementation intentionally does not call xmlFreeDoc() from clear().
     */
     ~XmlDoc();
 
@@ -118,32 +134,55 @@ public:
     std::ostream& operator<<(std::ostream& os) { return os << XML(); }
 
     /**
-     * @brief Save document to given filename.
-     * @param filename Path to save.
-     * @return True on success.
+     * @brief Save the document to a filename.
+     * @param filename Destination path.
+     *
+     * On success the libxml2 document URL is updated so that a later Save()
+     * without arguments writes to the same location.
      */
     void Save(const char* filename);
 
     /**
-     * @brief Save document to its last used path.
-     * @return True on success.
+     * @brief Save the document using its current libxml2 document URL.
+     *
+     * If the document has no URL, the method returns without writing.
      */
     void Save();
     
    /**
-    * @brief Evaluate an XPath expression relative to this document.
-    * @tparam T Desired return type.
-    * @param expr XPath expression.
-    * @return Converted XPath result.
+    * @brief Evaluate an XPath expression relative to the document.
+    * @tparam T Desired C++ result type.
+    * @param query XPath expression.
+    * @return Result converted to T.
     *
-    * Errors are reported via @ref err.
+    * Explicit specializations provide std::string, double, int, bool, and
+    * std::vector<XmlNode> results.  Node-set results requested as scalar types
+    * are converted from the selected node value when exactly one node exists.
+    * Errors are reported through @ref err.
     */
     template <typename T> T XPath(std::string query);
 
+    /**
+     * @brief Attach an existing journal file to this document.
+     * @param filename Journal XML file.
+     */
     void OpenJournal(const char* filename);
 
+    /**
+     * @brief Create and attach a journal to this document.
+     * @param filename Destination journal filename.
+     * @param XML Optional journal seed XML.  If empty, a default open release
+     *            hierarchy is created.
+     */
     void CreateJournal(const char* filename, std::string XML = "");
 
+    /**
+     * @brief Return the cached XPath context, creating it on first use.
+     * @return XPath context associated with this document.
+     *
+     * The current implementation caches one context per XmlDoc; callers must
+     * not assume concurrent evaluations against that same context are safe.
+     */
     xmlXPathContextPtr XPathContext();
 
 private:
@@ -151,22 +190,34 @@ private:
     void clear() ;
 };
 
+/**
+ * @class XmlNode
+ * @brief Lightweight, transient wrapper around an xmlNodePtr.
+ *
+ * XmlNode does not own the underlying DOM node.  Wrappers may be constructed
+ * freely from xmlNodePtr values and often exist only long enough to perform an
+ * XPath query or mutation.  The owning XmlDoc is recovered from
+ * xmlNodePtr::doc->_private, and any attached XmlJrnl is inherited from it.
+ */
 class XmlNode
 {
 private:
     /* data */
 public:
-    xmlDocPtr doc = nullptr; /* the parent document tree */
-    xmlNodePtr node = nullptr;
-    ErrorPtr err = nullptr;
-    xmlXPathContextPtr ctxt = nullptr;
-    XmlJrnl* JRNL = nullptr;
+    xmlDocPtr doc = nullptr;             ///< Parent libxml2 document.
+    xmlNodePtr node = nullptr;           ///< Wrapped libxml2 node.
+    ErrorPtr err = nullptr;              ///< Last error/status reported by this wrapper.
+    xmlXPathContextPtr ctxt = nullptr;   ///< Borrowed document XPath context.
+    XmlJrnl* JRNL = nullptr;             ///< Journal attached to the owning XmlDoc, if any.
 
     XmlNode() {}
 
    /**
-    * @brief Construct an XmlNode from an existing xmlNodePtr.
-    * @param node Pointer to the existing xmlNodePtr.
+    * @brief Construct a transient wrapper for an existing libxml2 node.
+    * @param node Existing node pointer.
+    *
+    * The constructor recovers the canonical XmlDoc through doc->_private and
+    * inherits its journal association.
     */
     XmlNode(xmlNodePtr node) {
         if (!node) { err = new Error{lvl::ERR, "Invalid/NULL node pointer", ""}; return; }
@@ -197,8 +248,12 @@ public:
     std::ostream& operator<<(std::ostream& os) { return os << XML(); }
 
     /**
-     * @brief Replaces this node's content with parsed XML.
-     * @param XML New XML string.
+     * @brief Replace this logical node with XML parsed from a string.
+     * @param XML Replacement node XML.
+     *
+     * If journaling is enabled, the existing logical node is assigned a JID,
+     * the prior XML is recorded as a Modify action, and the same JID is
+     * propagated to the replacement xmlNodePtr.
      */
     void parse(std::string XML);
 
@@ -248,13 +303,21 @@ public:
     }
 
     /**
-     * @brief Remove this node from the XML tree and invalidate the wrapper.
+     * @brief Remove this node from the XML tree and invalidate this wrapper.
+     *
+     * With journaling enabled, the parent and all element children of the
+     * parent are first assigned JIDs, the Deletion action is recorded, and the
+     * deleted node's JID remains reserved in the journal map with a null live
+     * node pointer.
      */
     void Delete();
 
     /**
-     * @brief Build a structure based Path for the given node.
-     * @return String representing the path.
+     * @brief Return libxml2's structural XPath for the current node.
+     * @return Path from xmlGetNodePath(), or an empty string for a null node.
+     *
+     * This path is useful for diagnostics but is not used as persistent journal
+     * identity; JID provides that role.
      */
     std::string GetPath() const {
         if (!node) return {};
@@ -267,34 +330,55 @@ public:
         return result;
     }
 
+    /**
+     * @brief Return this node's JID, creating one when journaling requires it.
+     * @return Existing or newly assigned journal identity.
+     *
+     * A newly created JID is registered in XmlJrnl::jid_map.
+     */
     std::string JID();
+
+    /**
+     * @brief Propagate an existing logical JID to this physical node.
+     * @param jid Journal identity to assign.
+     *
+     * This overload deliberately rebinds the JID map to the current xmlNodePtr;
+     * it is used when parse() or Undo() replaces the physical node while
+     * preserving logical identity.
+     */
     void JID(std::string jid);
 
 /**
     * @brief Evaluate an XPath expression relative to this node.
-    * @tparam T Desired return type.
-    * @param expr XPath expression.
-    * @return Converted XPath result.
+    * @tparam T Desired C++ result type.
+    * @param query XPath expression.
+    * @return Result converted to T.
     *
-    * Errors are reported via @ref err.
+    * The XPath context is borrowed from the canonical XmlDoc.  Structural
+    * navigation is intentionally expressed through XPath so that element
+    * semantics are not obscured by text, CDATA, or comment nodes.
     */
     template <typename T> T XPath(std::string query);
 };
 
 /**
  * @class XmlJrnl
- * @brief XML change journal associated with an XmlDoc.
+ * @brief Mutation journal permanently associated with one canonical XmlDoc.
  *
- * XmlJrnl records mutations made to a journal-enabled XmlDoc.  Journal
- * entries are stored beneath the deepest currently open Release node.
+ * XmlJrnl is itself an XmlDoc containing a release-oriented journal DOM, while
+ * @ref source_doc identifies the separate source DOM being tracked.  The
+ * source association is a reference and therefore cannot be rebound.
  *
- * Releases may be nested.  @ref rel_no contains the numeric path to the
- * active release (for example {0,2,1} represents Release 0.2.1), while
- * @ref active_release identifies the corresponding XML node.
+ * Logical source nodes are identified by persistent hexadecimal JIDs.
+ * @ref jid_map maps each reserved JID to its current live xmlNodePtr; a null
+ * pointer represents a deleted logical node whose identity remains reserved by
+ * retained journal history.
  *
- * Mutation records are generated by XmlNode operations through LogAdd(),
- * LogModify(), and LogDelete().  The journal retains sufficient information
- * to identify the affected location and support reversal through Undo().
+ * Changes are recorded beneath the deepest open Release.  Action records use
+ * JIDs and structural relationships (Parent, Before, After) rather than
+ * xmlGetNodePath() as durable identity.  Undo conflicts caused by legitimate
+ * intervening journal history are reported as lvl::INFO with a "Conflict"
+ * message, leaving policy and resolution to the consuming application.
  */
 class XmlJrnl : public XmlDoc
 {
@@ -305,24 +389,28 @@ public:
     /// Deepest currently open Release node to which changes are appended.
     XmlNode active_release;
 
-    XmlDoc& source_doc;  ///< XmlDoc to which this journal is attached.
+    XmlDoc& source_doc;  ///< Canonical source DOM permanently attached to this journal.
 
+    /// Reserved JID -> current live source node; nullptr means logically deleted.
     std::map<std::string, xmlNodePtr> jid_map;
 
     /**
-     * @brief Open an existing journal file.
-     * @param filename Path to the journal XML file.
+     * @brief Open an existing journal for a canonical source document.
+     * @param source Source XmlDoc whose mutations this journal represents.
+     * @param filename Journal XML file.
      *
-     * Loads the journal and determines the deepest currently open Release.
+     * The constructor resolves the active release and indexes all existing JIDs
+     * present in the source DOM.
      */
     XmlJrnl(XmlDoc& source, const char *filename);
 
     /**
-     * @brief Construct a journal from XML text.
+     * @brief Construct a journal from XML text for a canonical source document.
+     * @param source Source XmlDoc whose mutations this journal represents.
      * @param content Complete journal XML document.
      *
-     * Parses the supplied XML and determines the deepest currently open
-     * Release.
+     * The constructor resolves the active release and indexes all existing JIDs
+     * present in the source DOM.
      */
     XmlJrnl(XmlDoc& source, const std::string content);
 
@@ -341,45 +429,55 @@ public:
     void CreateJournal(const char*, std::string) = delete;
 
     /**
-     * @brief Record addition of a node to the associated document.
-     * @param added Node after it has been added to the document.
+     * @brief Record addition of a source node.
+     * @param added Newly inserted node.
      *
-     * Appends an Add change record to @ref active_release, including the
-     * affected node location and information required to identify or reverse
-     * the addition.
+     * Delegates action-specific recording to ActionAdd.  The Change record
+     * contains the added node JID and the JID of its parent.
      */
     void LogAdd(XmlNode& added);
 
     /**
-     * @brief Record replacement or modification of a node.
-     * @param node Node being modified.
-     * @param oldXML XML representation of the node before modification.
+     * @brief Record replacement or modification of a source node.
+     * @param node Logical node being modified.
+     * @param oldXML Serialized state before replacement.
      *
-     * Appends a Modify change record to @ref active_release.  oldXML preserves
-     * the previous node state so the mutation can subsequently be reversed.
+     * Delegates to ActionModify, which records the node JID, parent JID, and
+     * Base64-encoded prior XML required for reversal.
      */
     void LogModify(XmlNode& node, const std::string& oldXML);
 
     /**
-     * @brief Record deletion of a node.
-     * @param node Node immediately before it is removed from the document.
+     * @brief Record deletion of a source node before it is unlinked.
+     * @param node Node immediately before removal.
      *
-     * Appends a Deletion change record to @ref active_release.  This must be
-     * called before the underlying xmlNodePtr is unlinked or freed so its
-     * path and XML content remain available.
+     * Delegates to ActionDelete, which records the deleted JID, parent JID,
+     * optional immediate element sibling JIDs (Before/After), and Base64-
+     * encoded node XML.  These relationships define the structural slot needed
+     * for Undo().
      */
     void LogDelete(XmlNode& node);
 
     /**
-     * @brief Reverse a previously recorded journal action.
-     * @param action_node Change node describing the mutation to reverse.  Blank means undo the most recent action.
-     *
-     * Interprets the journal entry and applies the inverse operation to the
-     * associated document.
+     * @brief Undo the most recent unreversed Change in the active release.
      */
     void Undo();
+
+    /**
+     * @brief Undo one recorded Change.
+     * @param action_node Journal Change node.
+     *
+     * Dispatches to ActionModify, ActionDelete, or ActionAdd according to
+     * its Type attribute.  Already reversed actions return without further work.
+     */
     void Undo(XmlNode action_node);
+
+    /**
+     * @brief Undo a sequence of actions in reverse order.
+     * @param action_nodes Journal Change nodes in journal/document order.
+     */
     void Undo(std::vector<XmlNode> action_nodes);
+
 
     /**
      * @brief Recalculate the currently active Release branch.
@@ -390,8 +488,21 @@ public:
      */
     void RefreshActiveRelease();
 
+    /**
+     * @brief Rebuild the live JID index from JID attributes in source_doc.
+     *
+     * Duplicate JIDs are reported as errors.  XPath is used to obtain all JID
+     * attributes without manual DOM traversal.
+     */
     void BuildJIDMap();
 
+    /**
+     * @brief Generate a JID unique within this journal namespace.
+     * @return Unused 16-character hexadecimal JID.
+     *
+     * Uniqueness is checked only against this journal's jid_map; JIDs are not
+     * intended to be globally unique across unrelated documents.
+     */
     std::string JID();
 
     // std::string ReleaseString() const;
@@ -409,21 +520,39 @@ private:
     XmlNode FindActiveRelease(XmlNode start, std::vector<int>& path);
 };
 
+/**
+ * @struct Action
+ * @brief Base class for a journal Change transaction.
+ *
+ * Action owns behavior common to every transaction type: creation of the
+ * Change element shell, Type, JID, and TimeStamp attributes, Reversed state, common
+ * conflict reporting, and reversal stamping.  Derived classes contribute only
+ * their action-specific payload and inverse DOM operation.
+ */
 struct Action {
-    XmlJrnl& jrnl;
-    XmlNode action_node;      // <Change/> node in JRNL
-    Error* err = nullptr;
+    XmlJrnl& jrnl;             ///< Journal/source context for this action.
+    XmlNode action_node;       ///< Change node in the journal DOM.
+    Error* err = nullptr;      ///< Action-local error or INFO conflict status.
 
-    std::string type;
-    std::string jid;
+    std::string type;          ///< Change Type attribute supplied by the specialization.
+    std::string jid;           ///< Logical source-node JID supplied by the specialization.
 
     Action(XmlJrnl& j) : jrnl(j) {}
     Action(XmlJrnl& j, XmlNode action) : jrnl(j), action_node(action) {}
 
     virtual ~Action() = default;
 
+    /**
+     * @brief Apply the inverse of this action to the source DOM.
+     */
     virtual void Undo() = 0;
 
+    /**
+     * @brief Create the common journal Change node.
+     *
+     * Derived Record() implementations set @ref type and @ref jid before
+     * calling this method, then append their action-specific child nodes.
+     */
     void Record()
     {
         if (type.empty() || jid.empty()) {
@@ -444,19 +573,37 @@ struct Action {
             err = action_node.err;
     }
 
-
 protected:
+    /**
+     * @brief Mark a successfully undone action as reversed and timestamp it.
+     */
     void ReverseStamp();
+
+    /**
+     * @brief Report a legitimate journal-history conflict.
+     * @param msg Human-readable conflict description.
+     * @param cause Journal node that best identifies the precipitating action.
+     *
+     * Conflicts are lvl::INFO because they represent incompatible transaction
+     * history rather than a library/programming failure.
+     */
     void Conflict(const std::string& msg, XmlNode cause)
     {
         err = new Error{lvl::INFO, "Conflict: " + msg, cause.node ? cause.GetPath() : action_node.GetPath()};
     }
-
 };
 
+/**
+ * @struct ActionModify
+ * @brief Journal action for replacement/modification of one logical node.
+ *
+ * Record() stores the parent JID and the Base64-encoded prior node XML.
+ * Undo() restores that prior XML while preserving the logical JID and updating
+ * jid_map to the replacement xmlNodePtr.
+ */
 struct ActionModify : public Action {
-    XmlNode node;
-    std::string oldXML;
+    XmlNode node;              ///< Live source node while recording.
+    std::string oldXML;        ///< Serialized state prior to modification.
 
     ActionModify(XmlJrnl& j, XmlNode n, const std::string& old);
     ActionModify(XmlJrnl& j, XmlNode action);
@@ -465,8 +612,16 @@ struct ActionModify : public Action {
     void Undo() override;
 };
 
+/**
+ * @struct ActionDelete
+ * @brief Journal action for removal and structural restoration of a node.
+ *
+ * Record() stores Parent plus optional Before/After element-sibling JIDs and
+ * the serialized deleted node.  Undo() validates that structural slot before
+ * reinsertion; incompatible intervening changes are reported as INFO conflicts.
+ */
 struct ActionDelete : public Action {
-    XmlNode node;
+    XmlNode node;              ///< Live source node while recording.
 
     ActionDelete(XmlJrnl& j, XmlNode n);
     ActionDelete(XmlJrnl& j, XmlNode action, bool);
@@ -475,8 +630,16 @@ struct ActionDelete : public Action {
     void Undo() override;
 };
 
+/**
+ * @struct ActionAdd
+ * @brief Journal action for insertion of a new logical node.
+ *
+ * Record() stores the added JID and parent JID.  Undo() removes the live node
+ * when it still belongs to the recorded parent, leaves the JID reserved with a
+ * null mapping, and stamps the Change reversed.
+ */
 struct ActionAdd : public Action {
-    XmlNode node;
+    XmlNode node;              ///< Live source node while recording.
 
     ActionAdd(XmlJrnl& j, XmlNode n);
     ActionAdd(XmlJrnl& j, XmlNode action, bool);
