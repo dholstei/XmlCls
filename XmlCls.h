@@ -23,6 +23,7 @@
 #include <ctime>
 #include <random>
 #include <cstdint>
+#include <optional>
 
 #include "string.h"
 
@@ -39,7 +40,6 @@
 typedef Error* ErrorPtr;
 #include "base64.h"
 
-class XmlDoc;
 class XmlJrnl;
 class XmlNode;
 
@@ -74,11 +74,11 @@ class XmlDoc
 {
 
 public:
-    ErrorPtr err = nullptr;              ///< Last error/status reported by this wrapper.
-    xmlXPathContextPtr ctxt = nullptr;   ///< Cached XPath context for this DOM.
-    XmlJrnl* JRNL = nullptr;             ///< Optional mutation journal attached to this DOM.
-
-    xmlDocPtr const doc;                  ///< Immutable identity of the wrapped libxml2 DOM.
+    ErrorPtr err = nullptr;             ///< Last error/status reported by this wrapper.
+    xmlXPathContextPtr ctxt = nullptr;  ///< Cached XPath context for this DOM.
+    XmlJrnl* JRNL = nullptr;            ///< Optional mutation journal attached to this DOM.
+    xmlDocPtr const doc;                ///< Immutable identity of the wrapped libxml2 DOM.
+    bool immutable = false;             ///< True if journaling is invalid.
 
     XmlDoc() : doc(nullptr) {}
     XmlDoc(const XmlDoc&) = delete;
@@ -189,6 +189,10 @@ private:
 
     void clear() ;
 };
+
+struct Child;
+struct Before;
+struct After;
 
 /**
  * @class XmlNode
@@ -302,6 +306,12 @@ public:
         return lastAdded;
     }
 
+    template<typename Pos> void Move(Pos pos);
+
+    void MoveChild(XmlNode parent);
+    void MoveBefore(XmlNode sibling);
+    void MoveAfter(XmlNode sibling);
+    
     /**
      * @brief Remove this node from the XML tree and invalidate this wrapper.
      *
@@ -360,6 +370,30 @@ public:
     */
     template <typename T> T XPath(std::string query);
 };
+
+struct Child {
+    XmlNode destination;
+
+    bool noop(XmlNode& node);
+    xmlNodePtr Insert(xmlNodePtr node);
+};
+
+struct Before {
+    XmlNode destination;
+
+    bool noop(XmlNode& node);
+    xmlNodePtr Insert(xmlNodePtr node);
+};
+
+struct After {
+    XmlNode destination;
+
+    bool noop(XmlNode& node);
+    xmlNodePtr Insert(xmlNodePtr node);
+};
+
+inline xmlNodePtr PositionNode(const XmlNode& n) { return n.node; }
+inline xmlNodePtr PositionNode(xmlNodePtr n) { return n; }
 
 /**
  * @class XmlJrnl
@@ -505,6 +539,10 @@ public:
      */
     std::string JID();
 
+    std::string StampState(std::string type, std::string note);
+
+    void ValidateState();
+
     // std::string ReleaseString() const;
 
 private:
@@ -643,6 +681,28 @@ struct ActionAdd : public Action {
 
     ActionAdd(XmlJrnl& j, XmlNode n);
     ActionAdd(XmlJrnl& j, XmlNode action, bool);
+
+    void Record();
+    void Undo() override;
+};
+
+/**
+ * @struct ActionMove
+ * @brief Journal action for moving a logical node.
+ *
+ * Record() stores the moved JID and parent JID.  Undo() moves the node back
+ * to its original position, leaves the JID reserved with a null mapping, and
+ * stamps the Change reversed.
+ */
+struct ActionMove : public Action {
+    XmlNode node;
+
+    std::string from_parent;
+    std::string from_before;
+    std::string from_after;
+
+    ActionMove(XmlJrnl& j, XmlNode n);
+    ActionMove(XmlJrnl& j, XmlNode action, bool);
 
     void Record();
     void Undo() override;

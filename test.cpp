@@ -513,7 +513,8 @@ void test_journal_undo_modify()
     /*
      * Verify the journal transaction.
      */
-    XmlNode change = doc.JRNL->active_release     .XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto NL = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = NL.size() > 0 ? NL[0] : XmlNode();
 
     CHECK_EQ( change.XPath<std::string>("@Type"), std::string("Modify") );
     CHECK_EQ( change.XPath<std::string>("@JID"), jid );
@@ -632,7 +633,8 @@ void test_journal_delete()
     /*
      * The deletion transaction itself preserves B's JID.
      */
-    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto change_nodes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = change_nodes.empty() ? XmlNode() : change_nodes[0];
 
     CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Deletion"));
     std::string xml = change.XML();
@@ -710,7 +712,8 @@ void test_journal_undo_delete_middle()
     CHECK(!doc.JRNL->err);
     CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
 
-    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto change_nodes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = change_nodes.empty() ? XmlNode() : change_nodes[0];
 
     CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Deletion"));
 
@@ -758,7 +761,8 @@ void test_journal_undo_delete_first()
     CHECK(!a.err);
     CHECK(!doc.JRNL->err);
 
-    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto change_nodes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = change_nodes.empty() ? XmlNode() : change_nodes[0];
 
     CHECK(!change.XPath<bool>("./Before"));
     CHECK(change.XPath<bool>("./After"));
@@ -788,7 +792,8 @@ void test_journal_undo_delete_last()
     CHECK(!c.err);
     CHECK(!doc.JRNL->err);
 
-    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto change_nodes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = change_nodes.empty() ? XmlNode() : change_nodes[0];
 
     CHECK(change.XPath<bool>("./Before"));
     CHECK(!change.XPath<bool>("./After"));
@@ -818,7 +823,8 @@ void test_journal_undo_delete_only_child()
     CHECK(!a.err);
     CHECK(!doc.JRNL->err);
 
-    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto change_nodes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = change_nodes.empty() ? XmlNode() : change_nodes[0];
 
     CHECK(!change.XPath<bool>("./Before"));
     CHECK(!change.XPath<bool>("./After"));
@@ -857,7 +863,8 @@ void test_journal_undo_delete_parent_conflict()
     CHECK(!doc.JRNL->err);
     CHECK_EQ(doc.XPath<int>("count(/Outer/Parent/B)"), 0);
 
-    XmlNode b_change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto b_change_nodes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode b_change = b_change_nodes.empty() ? XmlNode() : b_change_nodes[0];
 
     CHECK_EQ(b_change.XPath<std::string>("@Type"), std::string("Deletion"));
 
@@ -928,7 +935,8 @@ void test_journal_undo_add()
 
     const std::string jid = b.XPath<std::string>("@JID");
 
-    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+    auto NL = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    XmlNode change = NL.size() > 0 ? NL[0] : XmlNode();
 
     CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Add"));
     CHECK_EQ(change.XPath<std::string>("@JID"), jid);
@@ -940,6 +948,343 @@ void test_journal_undo_add()
     CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
     CHECK(doc.JRNL->jid_map[jid] == nullptr);
     CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+
+    std::remove(path);
+}
+
+void test_journal_stamp_state()
+{
+    banner("XmlJrnl::StampState");
+
+    const char* path = "/tmp/xmlcls_test_state.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/></Root>"));
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    const std::string state_jid =
+        doc.JRNL->StampState("Save", "Test checkpoint");
+
+    CHECK(!doc.JRNL->err);
+    CHECK(!state_jid.empty());
+    CHECK_EQ(state_jid.size(), std::size_t{16});
+
+    /*
+     * Source DOM must identify the State it corresponds to.
+     */
+    CHECK_EQ(doc.XPath<std::string>("/Root/@STATE_JID"), state_jid);
+
+    /*
+     * Journal State must carry the same identity and metadata.
+     */
+    XmlNode state =
+        doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./State[last()]")[0];
+
+    CHECK_EQ(state.XPath<std::string>("@JID"), state_jid);
+    CHECK_EQ(state.XPath<std::string>("@Type"), std::string("Save"));
+    CHECK_EQ(state.XPath<std::string>("@Note"), std::string("Test checkpoint"));
+
+    const std::string ts = state.XPath<std::string>("@TimeStamp");
+    CHECK(!ts.empty());
+    CHECK(ts.find('T') != std::string::npos);
+    CHECK(ts.back() == 'Z');
+
+    /*
+     * State JIDs share the journal namespace, but do not identify
+     * a live source xmlNodePtr.
+     */
+    auto it = doc.JRNL->jid_map.find(state_jid);
+
+    CHECK(it != doc.JRNL->jid_map.end());
+
+    if (it != doc.JRNL->jid_map.end())
+        CHECK(it->second == nullptr);
+
+    std::remove(path);
+}
+
+void test_journal_build_jid_map_with_state()
+{
+    banner("XmlJrnl::BuildJIDMap with State");
+
+    XmlDoc doc(std::string(
+        "<Root JID=\"1111111111111111\" STATE_JID=\"3333333333333333\">"
+        "  <A JID=\"2222222222222222\"/>"
+        "</Root>"
+    ));
+
+    const std::string journal_xml =
+        "<JRNL>"
+        "  <Release Number=\"0\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
+        "    <Release Number=\"1\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
+        "      <Change Type=\"Deletion\" JID=\"4444444444444444\" TimeStamp=\"2026-01-01T00:00:01Z\">"
+        "        <Reversed TimeStamp=\"\" Value=\"false\"/>"
+        "      </Change>"
+        "      <State Type=\"Save\" JID=\"3333333333333333\" TimeStamp=\"2026-01-01T00:00:02Z\"/>"
+        "    </Release>"
+        "  </Release>"
+        "</JRNL>";
+
+    XmlJrnl journal(doc, journal_xml);
+
+    CHECK(!journal.err);
+
+    CHECK(journal.jid_map.find("1111111111111111") != journal.jid_map.end());
+    CHECK(journal.jid_map.find("2222222222222222") != journal.jid_map.end());
+    CHECK(journal.jid_map.find("3333333333333333") != journal.jid_map.end());
+    CHECK(journal.jid_map.find("4444444444444444") != journal.jid_map.end());
+
+    CHECK(journal.jid_map["1111111111111111"] != nullptr);
+    CHECK(journal.jid_map["2222222222222222"] != nullptr);
+    CHECK(journal.jid_map["3333333333333333"] == nullptr);
+    CHECK(journal.jid_map["4444444444444444"] == nullptr);
+}
+
+void test_journal_state_validation()
+{
+    banner("Journal STATE_JID validation");
+
+    const char* dom_path = "/tmp/xmlcls_state_validation.xml";
+    const char* jrnl_path = "/tmp/xmlcls_state_validation.jrnl.xml";
+
+    std::string state_jid;
+
+    /*
+     * ------------------------------------------------------------
+     * Create and save a valid DOM/JRNL pair.
+     * Save() should StampState("Save"), write STATE_JID into the
+     * source root, save the source DOM, then save the journal.
+     * ------------------------------------------------------------
+     */
+    {
+        XmlDoc doc(std::string("<Root><A>original</A></Root>"));
+        CHECK(!doc.err);
+
+        doc.CreateJournal(jrnl_path);
+        CHECK(doc.JRNL != nullptr);
+        CHECK(!doc.JRNL->err);
+
+        doc.Save(dom_path);
+
+        print_error("Save valid DOM/JRNL", doc.err);
+        CHECK(!doc.err);
+        CHECK(!doc.immutable);
+
+        state_jid = doc.XPath<std::string>("/*/@STATE_JID");
+
+        CHECK(!state_jid.empty());
+        CHECK_EQ(state_jid.size(), std::size_t{16});
+
+        XmlNode state = doc.JRNL->XPath<std::vector<XmlNode>>("(//State)[last()]")[0];
+
+        CHECK_EQ(state.XPath<std::string>("@JID"), state_jid);
+        CHECK_EQ(state.XPath<std::string>("@Type"), std::string("Save"));
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Reopen the saved pair.
+     *
+     * STATE_JID in the source must match the journal's latest State,
+     * so the source remains mutable.
+     * ------------------------------------------------------------
+     */
+    {
+        XmlDoc doc(dom_path);
+        CHECK(!doc.err);
+
+        doc.OpenJournal(jrnl_path);
+
+        print_error("Open valid DOM/JRNL", doc.err);
+
+        CHECK(doc.JRNL != nullptr);
+        CHECK(!doc.err);
+        CHECK(!doc.JRNL->err);
+        CHECK(!doc.immutable);
+
+        CHECK_EQ(doc.XPath<std::string>("/*/@STATE_JID"), state_jid);
+        CHECK_EQ(doc.JRNL->XPath<std::string>("(//State)[last()]/@JID"), state_jid);
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Corrupt the journal independently.
+     *
+     * Open it as an ordinary XmlDoc -- no journal attached -- and remove
+     * the State referenced by the source DOM.
+     * ------------------------------------------------------------
+     */
+    {
+        XmlDoc journal(jrnl_path);
+        CHECK(!journal.err);
+
+        auto states = journal.XPath<std::vector<XmlNode>>("//State");
+        CHECK(!states.empty());
+
+        XmlNode last_state = states.back();
+
+        CHECK_EQ(last_state.XPath<std::string>("@JID"), state_jid);
+
+        last_state.Delete();
+        CHECK(!last_state.err);
+
+        journal.Save();
+
+        print_error("Save corrupted journal", journal.err);
+        CHECK(!journal.err);
+
+        CHECK_EQ(journal.XPath<int>("count(//State[@JID='" + state_jid + "'])"), 0);
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Reopen the unchanged source against the damaged journal.
+     *
+     * The source explicitly claims STATE_JID=state_jid, but the journal
+     * can no longer substantiate that State.  This is an expected
+     * production/control condition, so report WARN and inhibit mutation.
+     * ------------------------------------------------------------
+     */
+    {
+        XmlDoc doc(dom_path);
+        CHECK(!doc.err);
+
+        CHECK_EQ(doc.XPath<std::string>("/*/@STATE_JID"), state_jid);
+
+        doc.OpenJournal(jrnl_path);
+
+        CHECK(doc.immutable);
+        CHECK(doc.err != nullptr);
+
+        if (doc.err) {
+            CHECK(doc.err->level == lvl::WARN);
+            CHECK(doc.err->msg.find("State") != std::string::npos ||
+                  doc.err->msg.find("STATE_JID") != std::string::npos);
+        }
+
+        /*
+         * The DOM must still be readable.
+         */
+        CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("original"));
+
+        /*
+         * But normal XmlCls mutation must be inhibited.
+         */
+        XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+        a.parse("<A>should not happen</A>");
+
+        CHECK(a.err != nullptr);
+
+        if (a.err)
+            CHECK(a.err->level == lvl::WARN);
+
+        CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("original"));
+    }
+
+    std::remove(dom_path);
+    std::remove(jrnl_path);
+}
+
+void test_journal_move_before()
+{
+    banner("ActionMove::MoveBefore / Undo");
+
+    const char* path = "/tmp/xmlcls_test_move_before.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B/><C/><D/></Root>"));
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Root/B")[0];
+    XmlNode d = doc.XPath<std::vector<XmlNode>>("/Root/D")[0];
+
+    /*
+     * Initial element order:
+     *     A B C D
+     */
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("D"));
+
+    d.Move(Before{b});
+
+    print_error("MoveBefore(D, B)", d.err);
+    CHECK(!d.err);
+    CHECK(!doc.JRNL->err);
+
+    /*
+     * New order:
+     *     A D B C
+     */
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("D"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("C"));
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Move"));
+
+    const std::string d_jid = d.XPath<std::string>("@JID");
+    CHECK(!d_jid.empty());
+    CHECK_EQ(change.XPath<std::string>("@JID"), d_jid);
+
+    /*
+     * Original slot:
+     *     C < D < end
+     */
+    CHECK_EQ(change.XPath<std::string>("./From/Before/@JID"),
+             doc.XPath<std::string>("/Root/C/@JID"));
+
+    CHECK(!change.XPath<bool>("./From/After"));
+
+    /*
+     * Destination slot:
+     *     A < D < B
+     */
+    CHECK_EQ(change.XPath<std::string>("./To/Before/@JID"),
+             doc.XPath<std::string>("/Root/A/@JID"));
+
+    CHECK_EQ(change.XPath<std::string>("./To/After/@JID"),
+             doc.XPath<std::string>("/Root/B/@JID"));
+
+    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
+
+    /*
+     * Undo must restore the exact original sibling order.
+     */
+    doc.JRNL->Undo(change);
+
+    print_error("Undo(Move)", doc.JRNL->err);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("D"));
+
+    /*
+     * Move does not replace the physical node or its logical identity.
+     */
+    XmlNode restored_d = doc.XPath<std::vector<XmlNode>>("/Root/D")[0];
+
+    CHECK_EQ(restored_d.XPath<std::string>("@JID"), d_jid);
+    CHECK(doc.JRNL->jid_map[d_jid] == restored_d.node);
+    CHECK(restored_d.node == d.node);
+
+    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+
+    const std::string ts = change.XPath<std::string>("./Reversed/@TimeStamp");
+    CHECK(!ts.empty());
+    CHECK(ts.find('T') != std::string::npos);
+    CHECK(ts.back() == 'Z');
 
     std::remove(path);
 }
@@ -966,6 +1311,10 @@ int main()
     test_journal_undo_delete_only_child();
     test_journal_undo_delete_parent_conflict();
     test_journal_undo_add();
+    test_journal_stamp_state();
+    test_journal_build_jid_map_with_state();
+    test_journal_state_validation();
+    test_journal_move_before();
 
     xmlCleanupParser();
 

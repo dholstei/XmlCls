@@ -8,8 +8,8 @@ ifeq (null,$(shell if ls -l /dev/log  2>/dev/null > /dev/null ; then echo system
 else
 	LOGGER?=logger --tag "[$@: `date`]" -s 2>&1 | tee -a $(LOG)
 endif
-CPP=g++
-CPPFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings
+CXX=g++
+CXXFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings
 
 INCLUDES:=-I/usr/include/libxml2
 INCLUDES:=$(INCLUDES) -I/usr/include
@@ -29,16 +29,16 @@ endif
 all: libXmlCls.a
 
 test: test.cpp libXmlCls.a
-	@if $(CPP) $(CPPFLAGS) $(INCLUDES) -o $@  $^ $(LDFLAGS) -L../cpp-base64 $(LDLIBS) -lxml2;\
+	@if $(CXX) $(CXXFLAGS) $(INCLUDES) -o $@  $^ $(LDFLAGS) -L../cpp-base64 $(LDLIBS) -lxml2;\
 		then echo "--- Build test: Success ---" | $(LOGGER) ;\
 		else echo "--- Build test: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 OBJECTS=
 
 %.o:	%.cpp %.h
-	@if $(CPP) $(CPPFLAGS) $(INCLUDES) -c $^;\
-		then echo "--- Compile $^: Success ---" | $(LOGGER) ;\
-		else echo "--- Compile $^: FAILURE! ---" | $(LOGGER) ; exit 1; fi
+	@if $(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@;\
+		then echo "--- Compile $< $*.h: Success ---" | $(LOGGER) ;\
+		else echo "--- Compile $< $*.h: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 libXmlCls.a:	XmlCls.o
 	@if ar rcs $@ $^ && ranlib $@;\
