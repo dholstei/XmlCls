@@ -538,7 +538,7 @@ bool Child::noop(XmlNode& node)
     return !node.err && next.empty();
 }
 
-xmlNodePtr Child::Insert(xmlNodePtr node)
+xmlNodePtr Child::Place(xmlNodePtr node)
 {
     return xmlAddChild(destination.node, node);
 }
@@ -549,7 +549,7 @@ bool Before::noop(XmlNode& node)
     return !destination.err && !prev.empty() && prev[0].node == node.node;
 }
 
-xmlNodePtr Before::Insert(xmlNodePtr node)
+xmlNodePtr Before::Place(xmlNodePtr node)
 {
     return xmlAddPrevSibling(destination.node, node);
 }
@@ -560,7 +560,7 @@ bool After::noop(XmlNode& node)
     return !destination.err && !next.empty() && next[0].node == node.node;
 }
 
-xmlNodePtr After::Insert(xmlNodePtr node)
+xmlNodePtr After::Place(xmlNodePtr node)
 {
     return xmlAddNextSibling(destination.node, node);
 }
@@ -640,90 +640,59 @@ static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDo
     return imported;
 }
 
-XmlNode XmlNode::AddChild(std::string XmlStr)
+template<typename Pos>
+XmlNode XmlNode::Add(Pos pos, std::string XmlStr)
 {
-    if (!node || !node->doc) {
-        err = new Error{lvl::ERR, "Cannot add child to null XmlNode", XmlStr.substr(0, 200)};
+    if (!pos.destination.node || !pos.destination.doc) {
+        err = new Error{lvl::ERR, "Cannot Add: invalid destination", XmlStr.substr(0, 200)};
         return XmlNode();
     }
-    MUTABLE_CHECK(node->doc, return XmlNode());
 
-    xmlNodePtr imported = XmlNodeFromString(XmlStr, node->doc, err);
-    if (!imported) return XmlNode();
+    MUTABLE_CHECK(pos.destination.doc, return XmlNode());
 
-    xmlNodePtr added = xmlAddChild(node, imported);
+    xmlNodePtr imported = XmlNodeFromString(XmlStr, pos.destination.doc, err);
+    if (!imported)
+        return XmlNode();
+
+    xmlNodePtr added = pos.Place(imported);
+
     if (!added) {
         xmlFreeNode(imported);
-        err = new Error{lvl::ERR, "xmlAddChild failed", XmlStr.substr(0, 200)};
+        err = new Error{lvl::ERR, "Cannot Add: XML placement failed", XmlStr.substr(0, 200)};
         return XmlNode();
     }
 
     XmlNode result(added);
 
-    if (JRNL)
-        JRNL->LogAdd(result);
+    if (result.JRNL) {
+        result.JRNL->LogAdd(result);
+
+        if (result.JRNL->err) {
+            result.err = result.JRNL->err;
+            err = result.err;
+        }
+    }
 
     return result;
+}
+
+template XmlNode XmlNode::Add<Before>(Before, std::string XmlStr);
+template XmlNode XmlNode::Add<After>(After, std::string XmlStr);
+template XmlNode XmlNode::Add<Child>(Child, std::string XmlStr);
+
+XmlNode XmlNode::AddChild(std::string XmlStr)
+{
+    return Add(Child{*this}, XmlStr);
 }
 
 XmlNode XmlNode::AddBefore(std::string XmlStr)
 {
-    if (!node || !node->doc) {
-        err = new Error{lvl::ERR, "Cannot add sibling before null XmlNode", XmlStr.substr(0, 200)};
-        return XmlNode();
-    }
-    MUTABLE_CHECK(node->doc, return XmlNode());
-    if (!node->parent) {
-        err = new Error{lvl::ERR, "Cannot add sibling before a node with no parent", XmlStr.substr(0, 200)};
-        return XmlNode();
-    }
-
-    xmlNodePtr imported = XmlNodeFromString(XmlStr, node->doc, err);
-    if (!imported) return XmlNode();
-
-    xmlNodePtr added = xmlAddPrevSibling(node, imported);
-    if (!added) {
-        xmlFreeNode(imported);
-        err = new Error{lvl::ERR, "xmlAddPrevSibling failed", XmlStr.substr(0, 200)};
-        return XmlNode();
-    }
-
-    XmlNode result(added);
-
-    if (JRNL)
-        JRNL->LogAdd(result);
-
-    return result;
+    return Add(Before{*this}, XmlStr);
 }
 
 XmlNode XmlNode::AddAfter(std::string XmlStr)
 {
-    if (!node || !node->doc) {
-        err = new Error{lvl::ERR, "Cannot add sibling after null XmlNode", XmlStr.substr(0, 200)};
-        return XmlNode();
-    }
-    MUTABLE_CHECK(node->doc, return XmlNode());
-    if (!node->parent) {
-        err = new Error{lvl::ERR, "Cannot add sibling after a node with no parent", XmlStr.substr(0, 200)};
-        return XmlNode();
-    }
-
-    xmlNodePtr imported = XmlNodeFromString(XmlStr, node->doc, err);
-    if (!imported) return XmlNode();
-
-    xmlNodePtr added = xmlAddNextSibling(node, imported);
-    if (!added) {
-        xmlFreeNode(imported);
-        err = new Error{lvl::ERR, "xmlAddNextSibling failed", XmlStr.substr(0, 200)};
-        return XmlNode();
-    }
-
-    XmlNode result(added);
-
-    if (JRNL)
-        JRNL->LogAdd(result);
-
-    return result;
+    return Add(After{*this}, XmlStr);
 }
 
 template<typename Pos>
@@ -764,28 +733,13 @@ void XmlNode::Move(Pos pos)
 
     xmlUnlinkNode(node);
 
-    if (!pos.Insert(node)) {
+    if (!pos.Place(node)) {
         err = new Error{lvl::ERR, "Cannot Move: XML insertion failed", GetPath()};
         return;
     }
 
     action.Record();
     if (action.err) err = action.err;
-}
-
-inline void XmlNode::MoveChild(XmlNode parent)
-{
-    Move(Child{parent});
-}
-
-inline void XmlNode::MoveBefore(XmlNode sibling)
-{
-    Move(Before{sibling});
-}
-
-inline void XmlNode::MoveAfter(XmlNode sibling)
-{
-    Move(After{sibling});
 }
 
 template void XmlNode::Move<Before>(Before);

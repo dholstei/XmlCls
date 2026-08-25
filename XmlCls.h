@@ -261,6 +261,7 @@ public:
      */
     void parse(std::string XML);
 
+    template<typename Pos> XmlNode Add(Pos pos, std::string XmlStr);
     /**
      * @brief Parse XML text and append it as a child of this node.
      * @param XmlStr XML text for the node to insert.
@@ -374,22 +375,28 @@ public:
 struct Child {
     XmlNode destination;
 
+    Child(XmlNode n) : destination(n) {}
+
     bool noop(XmlNode& node);
-    xmlNodePtr Insert(xmlNodePtr node);
+    xmlNodePtr Place(xmlNodePtr node);
 };
 
 struct Before {
     XmlNode destination;
 
+    Before(XmlNode n) : destination(n) {}
+
     bool noop(XmlNode& node);
-    xmlNodePtr Insert(xmlNodePtr node);
+    xmlNodePtr Place(xmlNodePtr node);
 };
 
 struct After {
     XmlNode destination;
 
+    After(XmlNode n) : destination(n) {}
+
     bool noop(XmlNode& node);
-    xmlNodePtr Insert(xmlNodePtr node);
+    xmlNodePtr Place(xmlNodePtr node);
 };
 
 inline xmlNodePtr PositionNode(const XmlNode& n) { return n.node; }

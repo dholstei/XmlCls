@@ -1289,6 +1289,329 @@ void test_journal_move_before()
     std::remove(path);
 }
 
+void test_journal_move_after()
+{
+    banner("ActionMove::MoveAfter / Undo");
+
+    const char* path = "/tmp/xmlcls_test_move_after.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B/><C/><D/></Root>"));
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    XmlNode c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
+
+    /*
+     * A B C D
+     * Move A after C -> B C A D
+     */
+    a.Move(After{c});
+
+    CHECK(!a.err);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("D"));
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Move"));
+
+    const std::string a_jid = a.XPath<std::string>("@JID");
+    CHECK_EQ(change.XPath<std::string>("@JID"), a_jid);
+
+    /*
+     * Original slot: start < A < B
+     */
+    CHECK(!change.XPath<bool>("./From/Before"));
+    CHECK_EQ(change.XPath<std::string>("./From/After/@JID"), doc.XPath<std::string>("/Root/B/@JID"));
+
+    /*
+     * Destination slot: C < A < D
+     */
+    CHECK_EQ(change.XPath<std::string>("./To/Before/@JID"), doc.XPath<std::string>("/Root/C/@JID"));
+    CHECK_EQ(change.XPath<std::string>("./To/After/@JID"), doc.XPath<std::string>("/Root/D/@JID"));
+
+    doc.JRNL->Undo(change);
+
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("D"));
+
+    XmlNode restored_a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+
+    CHECK_EQ(restored_a.XPath<std::string>("@JID"), a_jid);
+    CHECK(restored_a.node == a.node);
+    CHECK(doc.JRNL->jid_map[a_jid] == restored_a.node);
+    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+
+    std::remove(path);
+}
+
+void test_journal_move_child()
+{
+    banner("ActionMove::MoveChild / Undo");
+
+    const char* path = "/tmp/xmlcls_test_move_child.jrnl.xml";
+
+    XmlDoc doc(std::string(
+        "<Root>"
+        "  <Left><A/><B/></Left>"
+        "  <Right><C/><D/></Right>"
+        "</Root>"
+    ));
+
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Root/Left/B")[0];
+    XmlNode right = doc.XPath<std::vector<XmlNode>>("/Root/Right")[0];
+
+    const std::string b_jid_before = b.JID();
+    CHECK(!b.err);
+
+    /*
+     * Left:  A B
+     * Right: C D
+     *
+     * Move B as final child of Right:
+     *
+     * Left:  A
+     * Right: C D B
+     */
+    b.Move(Child{right});
+
+    CHECK(!b.err);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<int>("count(/Root/Left/*)"), 1);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Left/*[1])"), std::string("A"));
+
+    CHECK_EQ(doc.XPath<int>("count(/Root/Right/*)"), 3);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Right/*[1])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Right/*[2])"), std::string("D"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Right/*[3])"), std::string("B"));
+
+    XmlNode change = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]")[0];
+
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Move"));
+    CHECK_EQ(change.XPath<std::string>("@JID"), b_jid_before);
+
+    CHECK_EQ(change.XPath<std::string>("./From/Parent/@JID"), doc.XPath<std::string>("/Root/Left/@JID"));
+    CHECK_EQ(change.XPath<std::string>("./To/Parent/@JID"), doc.XPath<std::string>("/Root/Right/@JID"));
+
+    CHECK_EQ(change.XPath<std::string>("./From/Before/@JID"), doc.XPath<std::string>("/Root/Left/A/@JID"));
+    CHECK(!change.XPath<bool>("./From/After"));
+
+    CHECK_EQ(change.XPath<std::string>("./To/Before/@JID"), doc.XPath<std::string>("/Root/Right/D/@JID"));
+    CHECK(!change.XPath<bool>("./To/After"));
+
+    doc.JRNL->Undo(change);
+
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<int>("count(/Root/Left/*)"), 2);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Left/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Left/*[2])"), std::string("B"));
+
+    CHECK_EQ(doc.XPath<int>("count(/Root/Right/*)"), 2);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Right/*[1])"), std::string("C"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Right/*[2])"), std::string("D"));
+
+    XmlNode restored_b = doc.XPath<std::vector<XmlNode>>("/Root/Left/B")[0];
+
+    CHECK_EQ(restored_b.XPath<std::string>("@JID"), b_jid_before);
+    CHECK(restored_b.node == b.node);
+    CHECK(doc.JRNL->jid_map[b_jid_before] == restored_b.node);
+
+    std::remove(path);
+}
+
+void test_move_noop()
+{
+    banner("Move position no-op");
+
+    const char* path = "/tmp/xmlcls_test_move_noop.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B/><C/></Root>"));
+    doc.CreateJournal(path);
+
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Root/B")[0];
+    XmlNode c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
+    XmlNode root = doc.XPath<std::vector<XmlNode>>("/Root")[0];
+
+    const int changes = doc.JRNL->active_release.XPath<int>("count(./Change)");
+
+    /*
+     * B is already immediately before C.
+     */
+    b.Move(Before{c});
+
+    CHECK(!b.err);
+    CHECK_EQ(doc.JRNL->active_release.XPath<int>("count(./Change)"), changes);
+
+    /*
+     * C is already the final child of Root.
+     */
+    c.Move(Child{root});
+
+    CHECK(!c.err);
+    CHECK_EQ(doc.JRNL->active_release.XPath<int>("count(./Change)"), changes);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
+
+    std::remove(path);
+}
+
+void test_xmldoc_xpath_xmlnode()
+{
+    banner("XmlDoc::XPath<XmlNode>");
+
+    XmlDoc doc(std::string(
+        "<Root>"
+        "  <A>one</A>"
+        "  <A>two</A>"
+        "  <B>three</B>"
+        "</Root>"
+    ));
+
+    CHECK(!doc.err);
+
+    /*
+     * Exactly one node.
+     */
+    XmlNode b = doc.XPath<XmlNode>("/Root/B");
+
+    CHECK(!doc.err);
+    CHECK(b.node != nullptr);
+    CHECK_EQ(b.XPath<std::string>("."), std::string("three"));
+
+    /*
+     * No nodes.
+     */
+    doc.err = nullptr;
+
+    XmlNode none = doc.XPath<XmlNode>("/Root/C");
+
+    CHECK(doc.err != nullptr);
+    CHECK(none.node == nullptr);
+
+    if (doc.err)
+        CHECK(doc.err->level == lvl::ERR);
+
+    /*
+     * Multiple nodes: return the first, but report ambiguity.
+     */
+    doc.err = nullptr;
+
+    XmlNode first = doc.XPath<XmlNode>("/Root/A");
+
+    CHECK(doc.err != nullptr);
+    CHECK(first.node != nullptr);
+    CHECK_EQ(first.XPath<std::string>("."), std::string("one"));
+
+    if (doc.err)
+        CHECK(doc.err->level == lvl::WARN);
+
+    /*
+     * Wrong result type.
+     */
+    doc.err = nullptr;
+
+    XmlNode wrong = doc.XPath<XmlNode>("count(/Root/A)");
+
+    CHECK(doc.err != nullptr);
+    CHECK(wrong.node == nullptr);
+
+    if (doc.err)
+        CHECK(doc.err->level == lvl::ERR);
+}
+
+void test_xmlnode_xpath_xmlnode()
+{
+    banner("XmlNode::XPath<XmlNode>");
+
+    XmlDoc doc(std::string(
+        "<Root>"
+        "  <Group>"
+        "    <A>one</A>"
+        "    <A>two</A>"
+        "    <B>three</B>"
+        "  </Group>"
+        "</Root>"
+    ));
+
+    CHECK(!doc.err);
+
+    XmlNode group = doc.XPath<XmlNode>("/Root/Group");
+
+    CHECK(!doc.err);
+    CHECK(group.node != nullptr);
+
+    /*
+     * Exactly one relative node.
+     */
+    XmlNode b = group.XPath<XmlNode>("./B");
+
+    CHECK(!group.err);
+    CHECK(b.node != nullptr);
+    CHECK_EQ(b.XPath<std::string>("."), std::string("three"));
+
+    /*
+     * No relative nodes.
+     */
+    group.err = nullptr;
+
+    XmlNode none = group.XPath<XmlNode>("./C");
+
+    CHECK(group.err != nullptr);
+    CHECK(none.node == nullptr);
+
+    if (group.err)
+        CHECK(group.err->level == lvl::ERR);
+
+    /*
+     * Multiple relative nodes: return first + WARN.
+     */
+    group.err = nullptr;
+
+    XmlNode first = group.XPath<XmlNode>("./A");
+
+    CHECK(group.err != nullptr);
+    CHECK(first.node != nullptr);
+    CHECK_EQ(first.XPath<std::string>("."), std::string("one"));
+
+    if (group.err)
+        CHECK(group.err->level == lvl::WARN);
+
+    /*
+     * Wrong result type.
+     */
+    group.err = nullptr;
+
+    XmlNode wrong = group.XPath<XmlNode>("count(./A)");
+
+    CHECK(group.err != nullptr);
+    CHECK(wrong.node == nullptr);
+
+    if (group.err)
+        CHECK(group.err->level == lvl::ERR);
+}
+
 } // namespace
 
 int main()
@@ -1315,7 +1638,12 @@ int main()
     test_journal_build_jid_map_with_state();
     test_journal_state_validation();
     test_journal_move_before();
-
+    test_journal_move_after();
+    test_journal_move_child();
+    test_move_noop();
+    test_xmldoc_xpath_xmlnode();
+    test_xmlnode_xpath_xmlnode();
+    
     xmlCleanupParser();
 
     std::cout << "\n========== summary ==========" << '\n';
