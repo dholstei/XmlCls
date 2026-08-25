@@ -1612,6 +1612,85 @@ void test_xmlnode_xpath_xmlnode()
         CHECK(group.err->level == lvl::ERR);
 }
 
+void test_journal_undo_move_conflict()
+{
+    banner("ActionMove::Undo conflict");
+
+    const char* path = "/tmp/xmlcls_test_undo_move_conflict.jrnl.xml";
+
+    XmlDoc doc(std::string("<Root><A/><B/><C/><D/></Root>"));
+    CHECK(!doc.err);
+
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode b = doc.XPath<XmlNode>("/Root/B");
+    XmlNode c = doc.XPath<XmlNode>("/Root/C");
+    XmlNode d = doc.XPath<XmlNode>("/Root/D");
+
+    /*
+     * First transaction:
+     *
+     * A B C D
+     *     ->
+     * A D B C
+     */
+    d.Move(Before{b});
+
+    CHECK(!d.err);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode move_change = doc.JRNL->active_release.XPath<XmlNode>("./Change[last()]");
+
+    CHECK_EQ(move_change.XPath<std::string>("@Type"), std::string("Move"));
+
+    /*
+     * Disturb the destination slot with another transaction:
+     *
+     * A D B C
+     *     ->
+     * A B D C
+     *
+     * D is no longer in the To slot recorded by the first Move.
+     */
+    b.Move(Before{d});
+
+    CHECK(!b.err);
+    CHECK(!doc.JRNL->err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("D"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("C"));
+
+    /*
+     * Undoing the first Move must now conflict rather than silently
+     * rearranging the subsequently edited sequence.
+     */
+    doc.JRNL->Undo(move_change);
+
+    CHECK(doc.JRNL->err != nullptr);
+
+    if (doc.JRNL->err) {
+        CHECK(doc.JRNL->err->level == lvl::INFO);
+        CHECK(doc.JRNL->err->msg.find("Conflict") != std::string::npos);
+    }
+
+    /*
+     * Conflict must leave the DOM and original transaction untouched.
+     */
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("D"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("C"));
+
+    CHECK_EQ(move_change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
+    CHECK_EQ(move_change.XPath<std::string>("./Reversed/@TimeStamp"), std::string(""));
+
+    std::remove(path);
+}
+
 } // namespace
 
 int main()
@@ -1643,6 +1722,7 @@ int main()
     test_move_noop();
     test_xmldoc_xpath_xmlnode();
     test_xmlnode_xpath_xmlnode();
+    test_journal_undo_move_conflict();
     
     xmlCleanupParser();
 
