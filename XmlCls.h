@@ -459,6 +459,10 @@ public:
     /// Reserved JID -> current live source node; nullptr means logically deleted.
     std::map<std::string, xmlNodePtr> jid_map;
 
+    /// User data dictionary for application-specific metadata. Write as journal entry children
+    /// eg. `<user>username</user>', '<email>username@gmail.com</email>`
+    std::vector<std::string> user_xml;
+
     /**
      * @brief Open an existing journal for a canonical source document.
      * @param source Source XmlDoc whose mutations this journal represents.
@@ -639,7 +643,12 @@ struct Action {
         action_node = jrnl.active_release.AddChild(xml);
 
         if (action_node.err)
-            err = action_node.err;
+            { err = action_node.err; action_node.err = nullptr; return; }
+
+        for (const auto& user : jrnl.user_xml) {
+            action_node.AddChild(user);
+            if (action_node.err) { err = action_node.err; action_node.err = nullptr; return; }
+        }
     }
 
 protected:
