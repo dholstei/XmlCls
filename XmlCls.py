@@ -128,8 +128,16 @@ class XmlCls:
         cls._lib.xmlXPathFreeObject.argtypes = [POINTER(_xmlXPathObject)]
         cls._lib.xmlXPathFreeObject.restype = None
 
+        cls._lib.xmlXPathNodeEval.argtypes = [c_void_p, c_char_p, c_void_p]
+        cls._lib.xmlXPathNodeEval.restype = POINTER(_xmlXPathObject)
+
         cls._lib.xmlNodeGetContent.argtypes = [c_void_p]
         cls._lib.xmlNodeGetContent.restype = c_void_p
+
+        cls._xlib = CDLL("./XmlClsLib.so")
+
+        cls._xlib.XmlNode_XML.argtypes = [c_void_p, c_char_p, c_size_t]
+        cls._xlib.XmlNode_XML.restype = c_size_t
 
     def API_err(self, data: str = "") -> Error:
         p = self._lib.xmlGetLastError()
@@ -180,30 +188,55 @@ class XmlCls:
 
         return self.ctxt
 
-    def XPath(self, query: str, type=c_void_p):
+    def XPath(self, query: str, type=None, node=None):
         ctxt = self._XPathContext()
 
-        result = self._lib.xmlXPathEvalExpression(query.encode("utf-8"), ctxt)
+        if type is None:
+            type = XmlNode
+
+        if node is None:
+            result = self._lib.xmlXPathEvalExpression(query.encode("utf-8"), ctxt)
+        else:
+            node_ptr = node.node if isinstance(node, XmlNode) else node
+            result = self._lib.xmlXPathNodeEval(node_ptr, query.encode("utf-8"), ctxt)
 
         if not result:
-            raise RuntimeError(f'XPath evaluation failed: "{query}"')
+            self.API_err(f'XPath evaluation failed: "{query}"')
+            return self._XPathDefault(type)
 
         try:
             obj = result.contents
 
-            if type is c_void_p:
+            if type is XmlNode:
                 if obj.type != XPathType.NODESET:
-                    raise TypeError(f'XPath result is not a node set: "{query}"')
+                    self.err = Error(lvl.ERR, "XPath result is not a node set", query)
+                    return None
 
                 nodes = obj.nodesetval
 
                 if not nodes or nodes.contents.nodeNr == 0:
-                    return c_void_p()
+                    return None
 
                 if nodes.contents.nodeNr > 1:
-                    raise RuntimeError(f'XPath result is ambiguous, not a single node: "{query}"')
+                    self.err = Error(lvl.ERR, "XPath result is ambiguous, expected one node", query)
+                    return None
 
-                return c_void_p(nodes.contents.nodeTab[0])
+                return XmlNode(self, c_void_p(nodes.contents.nodeTab[0]))
+
+            if type == list[XmlNode]:
+                if obj.type != XPathType.NODESET:
+                    self.err = Error(lvl.ERR, "XPath result is not a node set", query)
+                    return []
+
+                nodes = obj.nodesetval
+
+                if not nodes or nodes.contents.nodeNr == 0:
+                    return []
+
+                return [
+                    XmlNode(self, c_void_p(nodes.contents.nodeTab[i]))
+                    for i in range(nodes.contents.nodeNr)
+                ]
 
             if type is str:
                 if obj.type == XPathType.STRING:
@@ -213,11 +246,13 @@ class XmlCls:
                     nodes = obj.nodesetval
 
                     if not nodes or nodes.contents.nodeNr != 1:
-                        raise RuntimeError(f'XPath result is not a single node: "{query}"')
+                        self.err = Error(lvl.ERR, "XPath result is not a single node", query)
+                        return ""
 
                     return self._NodeString(nodes.contents.nodeTab[0])
 
-                raise TypeError(f'XPath result cannot be converted to str: "{query}"')
+                self.err = Error(lvl.ERR, "XPath result cannot be converted to str", query)
+                return ""
 
             if type is float:
                 if obj.type == XPathType.NUMBER:
@@ -227,11 +262,17 @@ class XmlCls:
                     nodes = obj.nodesetval
 
                     if not nodes or nodes.contents.nodeNr != 1:
-                        raise RuntimeError(f'XPath result is not a single node: "{query}"')
+                        self.err = Error(lvl.ERR, "XPath result is not a single node", query)
+                        return 0.0
 
-                    return float(self._NodeString(nodes.contents.nodeTab[0]))
+                    try:
+                        return float(self._NodeString(nodes.contents.nodeTab[0]))
+                    except ValueError:
+                        self.err = Error(lvl.ERR, "XPath node value cannot be converted to float", query)
+                        return 0.0
 
-                raise TypeError(f'XPath result cannot be converted to float: "{query}"')
+                self.err = Error(lvl.ERR, "XPath result cannot be converted to float", query)
+                return 0.0
 
             if type is int:
                 if obj.type == XPathType.NUMBER:
@@ -241,11 +282,17 @@ class XmlCls:
                     nodes = obj.nodesetval
 
                     if not nodes or nodes.contents.nodeNr != 1:
-                        raise RuntimeError(f'XPath result is not a single node: "{query}"')
+                        self.err = Error(lvl.ERR, "XPath result is not a single node", query)
+                        return 0
 
-                    return int(float(self._NodeString(nodes.contents.nodeTab[0])))
+                    try:
+                        return int(float(self._NodeString(nodes.contents.nodeTab[0])))
+                    except ValueError:
+                        self.err = Error(lvl.ERR, "XPath node value cannot be converted to int", query)
+                        return 0
 
-                raise TypeError(f'XPath result cannot be converted to int: "{query}"')
+                self.err = Error(lvl.ERR, "XPath result cannot be converted to int", query)
+                return 0
 
             if type is bool:
                 if obj.type == XPathType.BOOLEAN:
@@ -255,9 +302,11 @@ class XmlCls:
                     nodes = obj.nodesetval
                     return bool(nodes and nodes.contents.nodeNr > 0)
 
-                raise TypeError(f'XPath result cannot be converted to bool: "{query}"')
+                self.err = Error(lvl.ERR, "XPath result cannot be converted to bool", query)
+                return False
 
             raise TypeError(f"Unsupported XPath return type: {type}")
+
         finally:
             self._lib.xmlXPathFreeObject(result)
 
@@ -287,3 +336,22 @@ class XmlNode:
     @property
     def err(self):
         return self.owner.err
+
+
+    def XPath(self, query: str, type=None):
+        if type is None:
+            type = XmlNode
+
+        return self.owner.XPath(query, type, node=self)
+    
+    def XML(self) -> str:
+        size = self.owner._xlib.XmlNode_XML(self.node, None, 0)
+        if not size:
+            return ""
+
+        buf = create_string_buffer(size)
+
+        if self.owner._xlib.XmlNode_XML(self.node, buf, size) != size:
+            return ""
+
+        return buf.value.decode("utf-8")

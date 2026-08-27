@@ -8,3 +8,7 @@ if __name__ == "__main__":
     print(pi)
     txt = dom.XPath("//child", str)
     print(txt)
+    chile = dom.XPath("//child")
+    val_str = chile.XPath("@value", str)
+    print(val_str)
+    print(chile.XML())

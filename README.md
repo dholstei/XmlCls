@@ -13,8 +13,10 @@ Key characteristics:
 The design aligns well with systems that require deterministic behavior, auditability, and predictable error handling.
 
 ## Files
-- **XmlCls.h** – Public API declarations: classes, methods, and inline helpers.
+- **XmlCls.h** – Public C++ API declarations: classes, methods, and inline helpers.
 - **XmlCls.cpp** – Parsing, XPath evaluation, mutation, journaling, and undo implementations.
+- **XmlClsLib.cpp** – Minimal language-neutral `extern "C"` facade over selected C++ `XmlNode` operations.
+- **XmlCls.py** – Lightweight Python/`ctypes` interface using libxml2 directly for document parsing and XPath, with selected C++ operations exposed through `XmlClsLib.so`.
 
 ## Dependencies
 - **libxml2** (headers and library)
@@ -80,6 +82,69 @@ serialization, or mutation.
 `XmlNode::GetPath()` remains available for diagnostics, but structural XPath is
 not used as persistent journal identity because a path can change as the DOM is
 modified.
+
+## Python Interface
+
+A lightweight Python interface is provided for applications and scripting environments that need the core `XmlCls` navigation model without duplicating the C++ implementation.
+
+The Python layer uses `ctypes` to call libxml2 directly for parsing and XPath evaluation. `XmlCls` represents the document and `XmlNode` is a lightweight wrapper around an `xmlNodePtr`. Relative node XPath uses `xmlXPathNodeEval()`, so evaluation does not modify the persistent XPath context node.
+
+Supported typed XPath results currently include:
+
+- `str`
+- `float`
+- `int`
+- `bool`
+- `XmlNode`
+- `list[XmlNode]`
+
+For example:
+
+```python
+from XmlCls import XmlCls
+
+if __name__ == "__main__":
+    dom = XmlCls("<root><child value='3.14'>text</child></root>")
+
+    pi = dom.XPath("//child/@value", float)
+    print(pi)
+
+    txt = dom.XPath("//child", str)
+    print(txt)
+
+    child = dom.XPath("//child")
+    val_str = child.XPath("@value", str)
+    print(val_str)
+
+    print(child.XML())
+```
+
+Output:
+
+```text
+3.14
+text
+3.14
+<child value="3.14">text</child>
+```
+
+The serialized XML uses libxml2's serialization conventions. In the example above, the input attribute uses single quotes (`value='3.14'`), while serialization produces the equivalent double-quoted form (`value="3.14"`). Applications should therefore treat serialized XML as XML rather than expect byte-for-byte preservation of the original source formatting.
+
+As in the C++ interface, routine XML and XPath errors are reported through an `Error` object rather than exceptions. Exceptions are reserved for programming/API-contract errors that require programmer intervention.
+
+### `XmlClsLib.so`
+
+Selected C++ functionality is exposed through a small language-neutral `extern "C"` facade in `XmlClsLib.so`. The initial interface exposes `XmlNode::XML()` while keeping the ABI independent of Python.
+
+The XML serialization interface uses a caller-provided buffer rather than returning an allocation owned by C++:
+
+```c
+size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t size);
+```
+
+This keeps allocation ownership on the caller's side and makes the same shared library usable from Python, C#, LabVIEW, and other environments capable of calling a C ABI.
+
+All object code linked into `XmlClsLib.so`, including objects extracted from static libraries, must be compiled as position-independent code (`-fPIC`).
 
 ## Mutation Journaling
 

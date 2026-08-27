@@ -9,13 +9,13 @@ else
 	LOGGER?=logger --tag "[$@: `date`]" -s 2>&1 | tee -a $(LOG)
 endif
 CXX=g++
-CXXFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings
+CXXFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings -fPIC
 
 INCLUDES:=-I/usr/include/libxml2
 INCLUDES:=$(INCLUDES) -I/usr/include
 INCLUDES:=$(INCLUDES) -I./ -I../XmlCls -I../cpp-base64
 LDFLAGS=$(DEBUG)
-LDLIBS:=-lcrypto -lBase64
+LDLIBS:=-lcrypto -lBase64 -lxml2
 # ifeq ($(STATIC),)
 # else
 # endif
@@ -26,12 +26,24 @@ else
 	BINDIR:=debug
 endif
 
-all: libXmlCls.a
+XMLCLS_LIB := XmlClsLib.so
+
+all: libXmlCls.a $(XMLCLS_LIB)
+
+$(XMLCLS_LIB): XmlClsLib.o XmlCls.o
+	@if $(CXX) -shared -o $@ $^ -L../cpp-base64  $(LDLIBS);\
+		then echo "--- Build \"$@\": Success ---" | $(LOGGER) ;\
+		else echo "--- Build \"$@\": FAILURE! ---" | $(LOGGER) ; exit 1; fi
+
+XmlClsLib.o: XmlClsLib.cpp XmlCls.h
+	@if $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(INCLUDES) -c $< -o $@;\
+		then echo "--- Build \"$@\": Success ---" | $(LOGGER) ;\
+		else echo "--- Build \"$@\": FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 test: test.cpp libXmlCls.a
 	@if $(CXX) $(CXXFLAGS) $(INCLUDES) -o $@  $^ $(LDFLAGS) -L../cpp-base64 $(LDLIBS) -lxml2;\
-		then echo "--- Build test: Success ---" | $(LOGGER) ;\
-		else echo "--- Build test: FAILURE! ---" | $(LOGGER) ; exit 1; fi
+		then echo "--- Build \"test\": Success ---" | $(LOGGER) ;\
+		else echo "--- Build \"test\": FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 OBJECTS=
 
