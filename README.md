@@ -202,6 +202,7 @@ Journal transactions are represented by a small action hierarchy:
 Action
 ├── ActionModify
 ├── ActionDelete
+├── ActionMove
 └── ActionAdd
 ```
 

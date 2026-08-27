@@ -158,10 +158,13 @@ void XmlDoc::clear() {
 }
 
 template <>
-std::string XmlDoc::XPath<std::string>(std::string query)
+std::string XmlDoc::XPath<std::string>(std::string query, xmlNodePtr node)
 {
     if (!ctxt) ctxt = XPathContext();
-    xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
+    xmlXPathObjectPtr result = node
+        ? xmlXPathNodeEval(node, BAD_CAST query.c_str(), ctxt)
+        : xmlXPathEvalExpression(BAD_CAST query.c_str(), ctxt);
+    
     if (result == nullptr) XML_ERROR(std::string, query);
     std::string ans;
 
@@ -192,10 +195,13 @@ std::string XmlDoc::XPath<std::string>(std::string query)
 }
 
 template <>
-double XmlDoc::XPath<double>(std::string query)
+double XmlDoc::XPath<double>(std::string query, xmlNodePtr node)
 {
     if (!ctxt) ctxt = XPathContext();
-    xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
+    xmlXPathObjectPtr result = node
+        ? xmlXPathNodeEval(node, BAD_CAST query.c_str(), ctxt)
+        : xmlXPathEvalExpression(BAD_CAST query.c_str(), ctxt);
+
     if (result == nullptr) XML_ERROR(double, query);
 
     double ans = 0.0;
@@ -231,9 +237,9 @@ double XmlDoc::XPath<double>(std::string query)
 }
 
 template <>
-int XmlDoc::XPath<int>(std::string query)
+int XmlDoc::XPath<int>(std::string query, xmlNodePtr node)
 {
-    double ans = XmlDoc::XPath<double>(query);
+    double ans = XmlDoc::XPath<double>(query, node);
     if (err) return 0;
     if (ans != static_cast<int>(ans)) {
         err = new Error{lvl::WARN, "Result is not an integer, truncating", query};
@@ -243,10 +249,13 @@ int XmlDoc::XPath<int>(std::string query)
 }
 
 template <>
-bool XmlDoc::XPath<bool>(std::string query)
+bool XmlDoc::XPath<bool>(std::string query, xmlNodePtr node)
 {
     if (!ctxt) ctxt = XPathContext();
-    xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
+    xmlXPathObjectPtr result = node
+        ? xmlXPathNodeEval(node, BAD_CAST query.c_str(), ctxt)
+        : xmlXPathEvalExpression(BAD_CAST query.c_str(), ctxt);
+
     if (result == nullptr) XML_ERROR(bool, query);
     bool ans = false;
 
@@ -264,11 +273,14 @@ bool XmlDoc::XPath<bool>(std::string query)
 }
 
 template <>
-std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
+std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query, xmlNodePtr node)
 {
     std::vector<XmlNode> NL;
     if (!ctxt) ctxt = XPathContext();
-    xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
+    xmlXPathObjectPtr result = node
+        ? xmlXPathNodeEval(node, BAD_CAST query.c_str(), ctxt)
+        : xmlXPathEvalExpression(BAD_CAST query.c_str(), ctxt);
+
     if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
 
     if (result->type == XPATH_NODESET)
@@ -292,10 +304,13 @@ std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query)
 }
 
 template <>
-XmlNode XmlDoc::XPath<XmlNode>(std::string query)
+XmlNode XmlDoc::XPath<XmlNode>(std::string query, xmlNodePtr node)
 {
     if (!ctxt) ctxt = XPathContext();
-    xmlXPathObjectPtr result = xmlXPathEvalExpression((const xmlChar *)query.c_str(), ctxt);
+    xmlXPathObjectPtr result = node
+        ? xmlXPathNodeEval(node, BAD_CAST query.c_str(), ctxt)
+        : xmlXPathEvalExpression(BAD_CAST query.c_str(), ctxt);
+        
     if (result == nullptr) XML_ERROR(XmlNode, query);
     XmlNode ans;
 
@@ -339,194 +354,6 @@ xmlXPathContextPtr XmlDoc::XPathContext()
         }
         return ctxt;
     }
-}
-
-template <>
-std::string XmlNode::XPath<std::string>(std::string query)
-{
-    XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
-
-    if (owner) ctxt = owner->XPathContext();
-    else {err = new Error{lvl::ERR, "No DOM!", query}; return std::string(); }
-
-    xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
-    if (result == nullptr) XML_ERROR(std::string, query);
-    std::string ans;
-
-    if (result->type == XPATH_STRING)
-        ans = std::string((const char *)result->stringval);
-
-    else if (result->type == XPATH_NODESET)
-    {
-        auto NL = result->nodesetval;
-        if (!NL || (NL->nodeNr != 1)) {
-            err = new Error{lvl::ERR, "No single node, not compatible for \"std::string\" type", query};
-            xmlXPathFreeObject(result); return ans; }
-        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "string(.)", ctxt);
-
-        if (result->type != XPATH_STRING)
-            err = new Error{lvl::ERR, "Couldn't determine intermediate string for \"std::string\" type", query};
-
-        else ans = std::string((const char *)result->stringval);
-    }
-    
-    else
-        err = new Error{lvl::ERR, "Result type is not \"string\"", query};
-
-    xmlXPathFreeObject(result);
-    return ans;
-}
-
-template <>
-double XmlNode::XPath<double>(std::string query)
-{
-    XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
-
-    if (owner) ctxt = owner->XPathContext();
-    else {err = new Error{lvl::ERR, "No DOM!", query}; return 0.0; }
-
-    xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
-    if (result == nullptr) XML_ERROR(double, query);
-
-    double ans = 0.0;
-    if (result->type == XPATH_NUMBER)
-    {
-        if (xmlXPathIsNaN(result->floatval)) err = new Error{lvl::ERR, "Result is NaN!", query};
-        else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
-        else ans = result->floatval;
-    }
-    
-    else if (result->type == XPATH_NODESET)
-    {
-        auto NL = result->nodesetval;
-        if (!NL || NL->nodeNr != 1) {
-            err = new Error{lvl::ERR, "No single node, not compatible for \"double\" type", query};
-            xmlXPathFreeObject(result); return ans; }
-        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "number(.)", ctxt);
-
-        if (result->type != XPATH_NUMBER) {
-            err = new Error{lvl::ERR, "Couldn't determine number for \"double\" type", query};
-            xmlXPathFreeObject(result); return ans; }
-
-        if (xmlXPathIsNaN(result->floatval)) err = new Error{lvl::ERR, "Result is NaN!", query};
-        else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
-        else ans = result->floatval;
-    }
-
-    else
-        err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
-    
-    xmlXPathFreeObject(result);
-    return ans;
-}
-
-template <>
-int XmlNode::XPath<int>(std::string query)
-{
-    double ans = XmlNode::XPath<double>(query);
-    if (err) return 0;
-    if (ans != static_cast<int>(ans)) {
-        err = new Error{lvl::WARN, "Result is not an integer, truncating", query};
-    }
-    
-    return int(ans);
-}
-
-template <>
-bool XmlNode::XPath<bool>(std::string query)
-{
-    XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
-
-    if (owner) ctxt = owner->XPathContext();
-    else {err = new Error{lvl::ERR, "No DOM!", query}; return false; }
-    
-    xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
-    if (result == nullptr) XML_ERROR(bool, query);
-    bool ans = false;
-
-    if (result->type == XPATH_BOOLEAN)
-        ans = result->boolval;
-    
-    else if (result->type == XPATH_NODESET)
-        ans = result->nodesetval && result->nodesetval->nodeNr > 0;
-
-    else
-        err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
-        
-    xmlXPathFreeObject(result);
-    return ans;
-}
-
-template <>
-std::vector<XmlNode> XmlNode::XPath<std::vector<XmlNode>>(std::string query)
-{
-    std::vector<XmlNode> NL;
-    XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
-
-    if (owner) ctxt = owner->XPathContext();
-    else {err = new Error{lvl::ERR, "No DOM!", query}; return std::vector<XmlNode>(); }
-
-    xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
-    if (result == nullptr) XML_ERROR(std::vector<XmlNode>, query);
-
-    if (result->type == XPATH_NODESET)
-    {
-        auto ans = result->nodesetval;
-        if (!ans) {
-            xmlXPathFreeObject(result);
-            return std::vector<XmlNode>();
-        }
-        NL.reserve(ans->nodeNr);
-        for (int i = 0; i < ans->nodeNr; i++) NL.emplace_back(XmlNode(ans->nodeTab[i]));
-        xmlXPathFreeObject(result);
-        return NL;
-    }
-    else
-    {
-        xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
-    }
-    return std::vector<XmlNode>();
-}
-
-template <>
-XmlNode XmlNode::XPath<XmlNode>(std::string query)
-{
-    XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
-
-    if (owner) ctxt = owner->XPathContext();
-    else {err = new Error{lvl::ERR, "No DOM!", query}; return XmlNode(); }
-
-    xmlXPathObjectPtr result = xmlXPathNodeEval(node, (const xmlChar *)query.c_str(), ctxt);
-    if (result == nullptr) XML_ERROR(XmlNode, query);
-    XmlNode ans;
-
-    if (result->type == XPATH_NODESET)
-    {
-        if (!result->nodesetval) {
-            err = new Error{lvl::ERR, "Result is NULL!", query};
-        }
-
-        else switch (result->nodesetval->nodeNr)
-            {
-            case 0:
-                err = new Error{lvl::ERR, "Result is NULL!", query};
-                break;
-            case 1:
-                ans = XmlNode(result->nodesetval->nodeTab[0]);
-                break;
-            default:
-                ans = XmlNode(result->nodesetval->nodeTab[0]);
-                err = new Error{lvl::WARN, "Result is ambiguous, not a single node!", query};
-                break;
-            }
-    }
-    else
-    {
-        err = new Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
-    }
-    xmlXPathFreeObject(result);
-    return ans;
 }
 
 bool Child::noop(XmlNode& node)

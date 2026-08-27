@@ -160,7 +160,7 @@ public:
     * are converted from the selected node value when exactly one node exists.
     * Errors are reported through @ref err.
     */
-    template <typename T> T XPath(std::string query);
+    template <typename T> T XPath(std::string query, xmlNodePtr node = nullptr);
 
     /**
      * @brief Attach an existing journal file to this document.
@@ -359,17 +359,41 @@ public:
      */
     void JID(std::string jid);
 
-/**
-    * @brief Evaluate an XPath expression relative to this node.
-    * @tparam T Desired C++ result type.
-    * @param query XPath expression.
-    * @return Result converted to T.
-    *
-    * The XPath context is borrowed from the canonical XmlDoc.  Structural
-    * navigation is intentionally expressed through XPath so that element
-    * semantics are not obscured by text, CDATA, or comment nodes.
-    */
-    template <typename T> T XPath(std::string query);
+    /**
+     * @brief Evaluate an XPath expression relative to this node.
+     * @tparam T Desired C++ result type.
+     * @param query XPath expression.
+     * @return Result converted to T.
+     *
+     * Delegates evaluation to the canonical owning XmlDoc, passing this node as
+     * the XPath context node.  This keeps XPath conversion, result validation,
+     * and error messages centralized in XmlDoc::XPath<T>().
+     *
+     * Any Error produced by the owning XmlDoc is transferred to this XmlNode and
+     * cleared from the owner so node-relative XPath failures do not leave the
+     * document in an error state.
+     *
+     * Structural navigation is intentionally expressed through XPath so that
+     * element semantics are not obscured by text, CDATA, or comment nodes.
+     */
+    template<typename T>
+    T XPath(std::string query)
+    {
+        XmlDoc* owner = doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
+
+        if (!owner) {
+            err = new Error{lvl::ERR, "No DOM!", query};
+            return T{};
+        }
+
+        T ans = owner->XPath<T>(query, node);
+
+        if (owner->err)
+            {err = owner->err; owner->err = nullptr;}
+
+        return ans;
+    }
+
 };
 
 struct Child {
