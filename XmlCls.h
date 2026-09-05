@@ -459,8 +459,8 @@ public:
     /// Reserved JID -> current live source node; nullptr means logically deleted.
     std::map<std::string, xmlNodePtr> jid_map;
 
-    /// User data dictionary for application-specific metadata. Write as journal entry children
-    /// eg. `<user>username</user>', '<email>username@gmail.com</email>`
+    /// Application-defined XML fragments appended as children of each journal entry.
+    /// Examples: <user>...</user>, <email>...</email>, <signature ...>...</signature>.
     std::vector<std::string> user_xml;
 
     /**

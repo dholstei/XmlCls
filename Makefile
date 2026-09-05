@@ -56,6 +56,9 @@ libXmlCls.a:	XmlCls.o
 	@if ar rcs $@ $^ && ranlib $@;\
 		then echo "--- Build $@: Success ---" | $(LOGGER) ;\
 		else echo "--- Build $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
+	@if ln -sf $@ XmlCls.a;\
+		then echo "--- Link $@: Success ---" | $(LOGGER) ;\
+		else echo "--- Link $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 clean:
 	@if rm -fv *.a *.o test && rm -rf repo/;\
