@@ -2,7 +2,7 @@
 """Lightweight PyQt6 tree editor for the XmlCls/libxml2 DOM."""
 
 import sys
-from ctypes import c_char_p, c_int, c_void_p
+from ctypes import c_char_p, c_void_p
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
@@ -103,6 +103,14 @@ class XmlClsEditor(QMainWindow):
         self.delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         self.delete_action.triggered.connect(self.delete_node)
 
+        self.collapse_all_action = QAction("&Collapse All", self)
+        self.collapse_all_action.setShortcut(QKeySequence("Ctrl+Up"))
+        self.collapse_all_action.triggered.connect(self.tree.collapseAll)
+
+        self.expand_all_action = QAction("&Expand All", self)
+        self.expand_all_action.setShortcut(QKeySequence("Ctrl+Down"))
+        self.expand_all_action.triggered.connect(self.tree.expandAll)
+
     def _create_menus(self):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
@@ -118,6 +126,10 @@ class XmlClsEditor(QMainWindow):
         edit_menu.addAction(self.direct_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.delete_action)
+
+        view_menu = self.menuBar().addMenu("&View")
+        view_menu.addAction(self.collapse_all_action)
+        view_menu.addAction(self.expand_all_action)
 
     def _update_title(self):
         name = Path(self.filename).name if self.filename else "Untitled"
@@ -164,22 +176,9 @@ class XmlClsEditor(QMainWindow):
                 return
             self.filename = filename
 
-        if hasattr(self.dom, "Save"):
-            result = self.dom.Save(self.filename)
-            if result is False:
-                self._error("Save failed", self._dom_error())
-                return
-        else:
-            lib = self.dom._lib
-            if not hasattr(lib, "xmlSaveFormatFileEnc"):
-                self._error("Save failed", "XmlCls has no Save() method and libxml2 has no xmlSaveFormatFileEnc().")
-                return
-            lib.xmlSaveFormatFileEnc.argtypes = [c_char_p, c_void_p, c_char_p, c_int]
-            lib.xmlSaveFormatFileEnc.restype = c_int
-            result = lib.xmlSaveFormatFileEnc(self.filename.encode("utf-8"), self.dom.doc, b"UTF-8", 1)
-            if result < 0:
-                self._error("Save failed", self._dom_error())
-                return
+        if not self.dom.Save(self.filename):
+            self._error("Save failed", self._dom_error())
+            return
 
         self._set_dirty(False)
 
@@ -247,19 +246,12 @@ class XmlClsEditor(QMainWindow):
             self._mutate(node, "Delete")
 
     def _mutate(self, node: XmlNode, operation: str, *args):
-        method = getattr(node, operation, None)
-        if method is None:
-            self._error(
-                f"{operation} unavailable",
-                f"The attached XmlCls.py does not yet bind XmlNode.{operation}().",
-            )
-            return
         try:
-            result = method(*args)
+            result = getattr(node, operation)(*args)
         except Exception as exc:
             self._error(f"{operation} failed", str(exc))
             return
-        if result is False:
+        if not result:
             self._error(f"{operation} failed", self._dom_error())
             return
         self.populate_tree()
@@ -274,7 +266,10 @@ class XmlClsEditor(QMainWindow):
         QMessageBox.critical(self, title, message)
 
     def closeEvent(self, event):
-        event.accept() if self._confirm_discard() else event.ignore()
+        if self._confirm_discard():
+            event.accept()
+        else:
+            event.ignore()
 
 
 def main() -> int:

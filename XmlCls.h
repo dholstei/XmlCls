@@ -747,3 +747,34 @@ struct ActionMove : public Action {
     void Record();
     void Undo() override;
 };
+
+/**
+ * @name C language interface
+ * @brief Stable, non-throwing entry points for ctypes and other FFIs.
+ *
+ * XmlDoc_Attach() installs the canonical C++ XmlDoc wrapper in
+ * xmlDoc::_private.  The caller retains ownership of the xmlDocPtr and must
+ * call XmlDoc_Detach() before freeing the libxml2 document.
+ *
+ * Functions returning int use 1 for success and 0 for failure.  Functions
+ * returning xmlNodePtr return nullptr on failure.  XmlCls_LastError() returns
+ * the error from the most recent C-interface call on the current thread; the
+ * pointer remains valid until the next C-interface call on that thread.
+ */
+extern "C" {
+    void* XmlDoc_Attach(xmlDocPtr doc);
+    void XmlDoc_Detach(void* owner);
+    int XmlDoc_Save(void* owner, const char* filename);
+    int XmlDoc_OpenJournal(void* owner, const char* filename);
+    int XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML);
+    int XmlDoc_Undo(void* owner);
+
+    size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t capacity);
+    xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML);
+    xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML);
+    xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML);
+    xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML);
+    int XmlNode_Delete(xmlNodePtr node);
+
+    const char* XmlCls_LastError();
+}

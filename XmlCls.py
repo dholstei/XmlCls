@@ -2,6 +2,7 @@ from ctypes import *
 from typing import ClassVar
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 
 
 class lvl(IntEnum):
@@ -65,6 +66,7 @@ class _xmlXPathObject(Structure):
 
 class XmlCls:
     _lib: ClassVar[CDLL | None] = None
+    _xlib: ClassVar[CDLL | None] = None
 
     def __init__(self, source):
         if XmlCls._lib is None:
@@ -74,6 +76,7 @@ class XmlCls:
         self.ctxt = c_void_p()
         self.err = Error()
         self._owns_doc = False
+        self._cpp_doc = c_void_p()
 
         if isinstance(source, c_void_p):
             self._from_doc(source)
@@ -88,6 +91,9 @@ class XmlCls:
             raise TypeError(
                 "XmlCls source must be c_void_p, str XML, or c_char_p filename"
             )
+
+        if self.doc:
+            self._attach_doc()
         
     @classmethod
     def _load_libxml2(cls):
@@ -134,10 +140,98 @@ class XmlCls:
         cls._lib.xmlNodeGetContent.argtypes = [c_void_p]
         cls._lib.xmlNodeGetContent.restype = c_void_p
 
-        cls._xlib = CDLL("./XmlClsLib.so")
+        cls._xlib = CDLL(str(Path(__file__).resolve().with_name("XmlClsLib.so")))
 
         cls._xlib.XmlNode_XML.argtypes = [c_void_p, c_char_p, c_size_t]
         cls._xlib.XmlNode_XML.restype = c_size_t
+
+        cls._xlib.XmlDoc_Attach.argtypes = [c_void_p]
+        cls._xlib.XmlDoc_Attach.restype = c_void_p
+        cls._xlib.XmlDoc_Detach.argtypes = [c_void_p]
+        cls._xlib.XmlDoc_Detach.restype = None
+        cls._xlib.XmlDoc_Save.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlDoc_Save.restype = c_int
+        cls._xlib.XmlDoc_OpenJournal.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlDoc_OpenJournal.restype = c_int
+        cls._xlib.XmlDoc_CreateJournal.argtypes = [c_void_p, c_char_p, c_char_p]
+        cls._xlib.XmlDoc_CreateJournal.restype = c_int
+        cls._xlib.XmlDoc_Undo.argtypes = [c_void_p]
+        cls._xlib.XmlDoc_Undo.restype = c_int
+
+        cls._xlib.XmlNode_Parse.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlNode_Parse.restype = c_void_p
+        cls._xlib.XmlNode_AddChild.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlNode_AddChild.restype = c_void_p
+        cls._xlib.XmlNode_AddBefore.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlNode_AddBefore.restype = c_void_p
+        cls._xlib.XmlNode_AddAfter.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlNode_AddAfter.restype = c_void_p
+        cls._xlib.XmlNode_Delete.argtypes = [c_void_p]
+        cls._xlib.XmlNode_Delete.restype = c_int
+
+        cls._xlib.XmlCls_LastError.argtypes = []
+        cls._xlib.XmlCls_LastError.restype = c_char_p
+
+    def _attach_doc(self):
+        owner = self._xlib.XmlDoc_Attach(self.doc)
+        if not owner:
+            self.CAPI_err("Unable to attach the C++ XmlDoc wrapper")
+            return
+        self._cpp_doc = c_void_p(owner)
+
+    def CAPI_err(self, data: str = "") -> Error:
+        value = self._xlib.XmlCls_LastError()
+        msg = value.decode("utf-8", errors="replace") if value else "Unknown XmlCls error"
+        self.err = Error(lvl.ERR, msg, data)
+        return self.err
+
+    def close(self):
+        if self.ctxt:
+            self._lib.xmlXPathFreeContext(self.ctxt)
+            self.ctxt = c_void_p()
+        if self._cpp_doc:
+            self._xlib.XmlDoc_Detach(self._cpp_doc)
+            self._cpp_doc = c_void_p()
+        if self._owns_doc and self.doc:
+            self._lib.xmlFreeDoc(self.doc)
+        self.doc = c_void_p()
+        self._owns_doc = False
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def Save(self, filename: str) -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_Save(self._cpp_doc, filename.encode("utf-8")):
+            self.CAPI_err(filename)
+            return False
+        self.err = Error()
+        return True
+
+    def OpenJournal(self, filename: str) -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_OpenJournal(self._cpp_doc, filename.encode("utf-8")):
+            self.CAPI_err(filename)
+            return False
+        self.err = Error()
+        return True
+
+    def CreateJournal(self, filename: str, XML: str = "") -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_CreateJournal(
+            self._cpp_doc, filename.encode("utf-8"), XML.encode("utf-8")
+        ):
+            self.CAPI_err(filename)
+            return False
+        self.err = Error()
+        return True
+
+    def Undo(self) -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_Undo(self._cpp_doc):
+            self.CAPI_err("Undo")
+            return False
+        self.err = Error()
+        return True
 
     def API_err(self, data: str = "") -> Error:
         p = self._lib.xmlGetLastError()
@@ -148,6 +242,7 @@ class XmlCls:
         e = p.contents
         msg = e.message.decode("utf-8", errors="replace").strip() if e.message else "Unknown libxml2 error"
         self.err = Error(lvl.ERR, msg, data)
+        return self.err
 
     def _from_doc(self, doc: c_void_p):
         if not doc or not doc.value:
@@ -355,3 +450,37 @@ class XmlNode:
             return ""
 
         return buf.value.decode("utf-8")
+
+    def parse(self, XML: str) -> bool:
+        node = self.owner._xlib.XmlNode_Parse(self.node, XML.encode("utf-8"))
+        if not node:
+            self.owner.CAPI_err(XML[:200])
+            return False
+        self.node = c_void_p(node)
+        self.owner.err = Error()
+        return True
+
+    def _Add(self, function, XML: str):
+        node = function(self.node, XML.encode("utf-8"))
+        if not node:
+            self.owner.CAPI_err(XML[:200])
+            return None
+        self.owner.err = Error()
+        return XmlNode(self.owner, c_void_p(node))
+
+    def AddChild(self, XML: str):
+        return self._Add(self.owner._xlib.XmlNode_AddChild, XML)
+
+    def AddBefore(self, XML: str):
+        return self._Add(self.owner._xlib.XmlNode_AddBefore, XML)
+
+    def AddAfter(self, XML: str):
+        return self._Add(self.owner._xlib.XmlNode_AddAfter, XML)
+
+    def Delete(self) -> bool:
+        if not self.owner._xlib.XmlNode_Delete(self.node):
+            self.owner.CAPI_err("Delete")
+            return False
+        self.node = c_void_p()
+        self.owner.err = Error()
+        return True
