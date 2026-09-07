@@ -3,6 +3,7 @@ from typing import ClassVar
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 class lvl(IntEnum):
@@ -26,6 +27,12 @@ class Error:
 
     def __bool__(self):
         return self.level >= lvl.ERR
+
+
+@dataclass(frozen=True)
+class RestorePoint:
+    jid: str
+    note: str = ""
 
 
 class _xmlError(Structure):
@@ -157,6 +164,16 @@ class XmlCls:
         cls._xlib.XmlDoc_CreateJournal.restype = c_int
         cls._xlib.XmlDoc_Undo.argtypes = [c_void_p]
         cls._xlib.XmlDoc_Undo.restype = c_int
+        cls._xlib.XmlDoc_HasJournal.argtypes = [c_void_p]
+        cls._xlib.XmlDoc_HasJournal.restype = c_int
+        cls._xlib.XmlDoc_MarkRelease.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlDoc_MarkRelease.restype = c_int
+        cls._xlib.XmlDoc_MarkRestorePoint.argtypes = [c_void_p, c_char_p, c_char_p, c_size_t]
+        cls._xlib.XmlDoc_MarkRestorePoint.restype = c_int
+        cls._xlib.XmlDoc_RestorePoints.argtypes = [c_void_p, c_char_p, c_size_t]
+        cls._xlib.XmlDoc_RestorePoints.restype = c_size_t
+        cls._xlib.XmlDoc_Restore.argtypes = [c_void_p, c_char_p]
+        cls._xlib.XmlDoc_Restore.restype = c_int
 
         cls._xlib.XmlNode_Parse.argtypes = [c_void_p, c_char_p]
         cls._xlib.XmlNode_Parse.restype = c_void_p
@@ -229,6 +246,46 @@ class XmlCls:
     def Undo(self) -> bool:
         if not self._cpp_doc or not self._xlib.XmlDoc_Undo(self._cpp_doc):
             self.CAPI_err("Undo")
+            return False
+        self.err = Error()
+        return True
+
+    def HasJournal(self) -> bool:
+        return bool(self._cpp_doc and self._xlib.XmlDoc_HasJournal(self._cpp_doc))
+
+    def MarkRelease(self, note: str = "") -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_MarkRelease(self._cpp_doc, note.encode("utf-8")):
+            self.CAPI_err(note)
+            return False
+        self.err = Error()
+        return True
+
+    def MarkRestorePoint(self, note: str = "") -> str:
+        jid = create_string_buffer(17)
+        if not self._cpp_doc or not self._xlib.XmlDoc_MarkRestorePoint(
+            self._cpp_doc, note.encode("utf-8"), jid, len(jid)
+        ):
+            self.CAPI_err(note)
+            return ""
+        self.err = Error()
+        return jid.value.decode("ascii")
+
+    def RestorePoints(self) -> list[RestorePoint]:
+        size = self._xlib.XmlDoc_RestorePoints(self._cpp_doc, None, 0) if self._cpp_doc else 0
+        if not size:
+            self.CAPI_err("RestorePoints")
+            return []
+        buf = create_string_buffer(size)
+        if self._xlib.XmlDoc_RestorePoints(self._cpp_doc, buf, size) != size:
+            self.CAPI_err("RestorePoints")
+            return []
+        root = ElementTree.fromstring(buf.value.decode("utf-8"))
+        self.err = Error()
+        return [RestorePoint(state.get("JID", ""), state.get("Note", "")) for state in root]
+
+    def Restore(self, jid: str) -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_Restore(self._cpp_doc, jid.encode("ascii")):
+            self.CAPI_err(jid)
             return False
         self.err = Error()
         return True

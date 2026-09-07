@@ -970,6 +970,79 @@ std::string XmlJrnl::StampState(std::string type, std::string note)
     return jid;
 }
 
+void XmlJrnl::MarkRelease(std::string note)
+{
+    if (!active_release.node) {
+        err = new Error{lvl::ERR, "Cannot mark release: journal has no active release", ""};
+        return;
+    }
+
+    auto parents = active_release.XPath<std::vector<XmlNode>>("..");
+    if (parents.size() != 1) {
+        err = new Error{lvl::ERR, "Cannot mark release: active release has no parent", active_release.GetPath()};
+        return;
+    }
+
+    int number = active_release.XPath<int>("number(@Number)") + 1;
+    auto siblings = parents[0].XPath<std::vector<XmlNode>>("./Release/@Number");
+    for (auto& sibling : siblings)
+        number = std::max(number, sibling.XPath<int>("number(.)") + 1);
+
+    const std::string timestamp = CurrentIsoTimestampUTC();
+    if (!xmlSetProp(active_release.node, BAD_CAST "Close", BAD_CAST timestamp.c_str())) {
+        err = new Error{lvl::ERR, "Cannot mark release: unable to close active release", active_release.GetPath()};
+        return;
+    }
+
+    xmlNodePtr release = xmlNewNode(nullptr, BAD_CAST "Release");
+    if (!release ||
+        !xmlSetProp(release, BAD_CAST "Number", BAD_CAST std::to_string(number).c_str()) ||
+        !xmlSetProp(release, BAD_CAST "Open", BAD_CAST timestamp.c_str()) ||
+        !xmlSetProp(release, BAD_CAST "Close", BAD_CAST "") ||
+        (!note.empty() && !xmlSetProp(release, BAD_CAST "Note", BAD_CAST note.c_str()))) {
+        if (release) xmlFreeNode(release);
+        err = new Error{lvl::ERR, "Cannot mark release: unable to create release entry", ""};
+        return;
+    }
+
+    if (!xmlAddNextSibling(active_release.node, release)) {
+        xmlFreeNode(release);
+        err = new Error{lvl::ERR, "Cannot mark release: unable to place release entry", active_release.GetPath()};
+        return;
+    }
+
+    RefreshActiveRelease();
+    if (!err) Save();
+}
+
+void XmlJrnl::Restore(std::string jid)
+{
+    XmlNode restore_point;
+    auto states = XPath<std::vector<XmlNode>>("//State[@Type='RestorePoint']");
+    if (err) return;
+
+    for (auto& state : states) {
+        if (state.XPath<std::string>("@JID") == jid) {
+            restore_point = state;
+            break;
+        }
+    }
+
+    if (!restore_point.node) {
+        err = new Error{lvl::ERR, "Cannot restore: restore-point JID was not found", jid};
+        return;
+    }
+
+    auto actions = restore_point.XPath<std::vector<XmlNode>>("following::Change[Reversed/@Value='false']");
+    if (restore_point.err) { err = restore_point.err; return; }
+
+    Undo(actions);
+    if (err) return;
+
+    if (StampState("Restore", jid).empty()) return;
+    Save();
+}
+
 void XmlJrnl::ValidateState()
 {
     const std::string source_state = source_doc.XPath<std::string>("/*/@STATE_JID");

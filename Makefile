@@ -61,6 +61,6 @@ libXmlCls.a:	XmlCls.o
 		else echo "--- Link $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
 clean:
-	@if rm -fv *.a *.o test && rm -rf repo/;\
+	@if rm -fv *.a *.o *.so test && rm -rf repo/;\
 		then echo "--- $@: Success ---" | $(LOGGER) ;\
 		else echo "--- $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi

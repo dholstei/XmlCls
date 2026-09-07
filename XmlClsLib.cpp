@@ -123,6 +123,95 @@ int XmlDoc_Undo(void* owner)
     return 1;
 }
 
+int XmlDoc_HasJournal(void* owner)
+{
+    ClearCError();
+    XmlDoc* wrapper = CDoc(owner);
+    return wrapper && wrapper->JRNL && !wrapper->immutable ? 1 : 0;
+}
+
+int XmlDoc_MarkRelease(void* owner, const char* note)
+{
+    ClearCError();
+    XmlDoc* wrapper = CDoc(owner);
+    if (!wrapper || !wrapper->JRNL) {
+        SetCError(nullptr, "XmlDoc has no open journal");
+        return 0;
+    }
+    wrapper->JRNL->err = nullptr;
+    wrapper->JRNL->MarkRelease(note ? note : "");
+    if (wrapper->JRNL->err) {
+        SetCError(wrapper->JRNL->err, "Unable to mark journal release");
+        return 0;
+    }
+    return 1;
+}
+
+int XmlDoc_MarkRestorePoint(void* owner, const char* note, char* jid, size_t capacity)
+{
+    ClearCError();
+    XmlDoc* wrapper = CDoc(owner);
+    if (!wrapper || !wrapper->JRNL || !jid || capacity < 17) {
+        SetCError(nullptr, "MarkRestorePoint requires a journal and a 17-byte JID buffer");
+        return 0;
+    }
+    wrapper->JRNL->err = nullptr;
+    const std::string value = wrapper->JRNL->StampState("RestorePoint", note ? note : "");
+    if (wrapper->JRNL->err || value.empty()) {
+        SetCError(wrapper->JRNL->err, "Unable to mark restore point");
+        return 0;
+    }
+    memcpy(jid, value.c_str(), value.size() + 1);
+    wrapper->JRNL->Save();
+    if (wrapper->JRNL->err) {
+        SetCError(wrapper->JRNL->err, "Unable to save restore point");
+        return 0;
+    }
+    return 1;
+}
+
+size_t XmlDoc_RestorePoints(void* owner, char* buffer, size_t capacity)
+{
+    ClearCError();
+    XmlDoc* wrapper = CDoc(owner);
+    if (!wrapper || !wrapper->JRNL) {
+        SetCError(nullptr, "XmlDoc has no open journal");
+        return 0;
+    }
+
+    std::string XML = "<RestorePoints>";
+    auto states = wrapper->JRNL->XPath<std::vector<XmlNode>>("//State[@Type='RestorePoint']");
+    if (wrapper->JRNL->err) {
+        SetCError(wrapper->JRNL->err, "Unable to list restore points");
+        return 0;
+    }
+    for (const auto& state : states) XML += state.XML();
+    XML += "</RestorePoints>";
+
+    const size_t required = XML.size() + 1;
+    if (!buffer) return required;
+    if (capacity < required) return required;
+    memcpy(buffer, XML.c_str(), required);
+    return required;
+}
+
+int XmlDoc_Restore(void* owner, const char* jid)
+{
+    ClearCError();
+    XmlDoc* wrapper = CDoc(owner);
+    if (!wrapper || !wrapper->JRNL || !jid) {
+        SetCError(nullptr, "Restore requires a journal and restore-point JID");
+        return 0;
+    }
+    wrapper->JRNL->err = nullptr;
+    wrapper->JRNL->Restore(jid);
+    if (wrapper->JRNL->err) {
+        SetCError(wrapper->JRNL->err, "Unable to restore journal state");
+        return 0;
+    }
+    return 1;
+}
+
 size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t capacity)
 {
     ClearCError();
@@ -227,6 +316,4 @@ const char* XmlCls_LastError()
     return c_api_error.c_str();
 }
 
-
-}
-
+} // extern "C"

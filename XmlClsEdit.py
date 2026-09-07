@@ -9,7 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QMainWindow, QMessageBox,
-    QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QInputDialog, QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
 from XmlCls import XmlCls, XmlNode
@@ -111,6 +111,19 @@ class XmlClsEditor(QMainWindow):
         self.expand_all_action.setShortcut(QKeySequence("Ctrl+Down"))
         self.expand_all_action.triggered.connect(self.tree.expandAll)
 
+        self.create_journal_action = QAction("&Create", self)
+        self.create_journal_action.triggered.connect(self.create_journal)
+
+        self.undo_journal_action = QAction("&Undo", self)
+        self.undo_journal_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_journal_action.triggered.connect(self.undo_journal)
+
+        self.mark_release_action = QAction("Mark &Release…", self)
+        self.mark_release_action.triggered.connect(self.mark_release)
+
+        self.mark_restore_point_action = QAction("Mark Restore &Point…", self)
+        self.mark_restore_point_action.triggered.connect(self.mark_restore_point)
+
     def _create_menus(self):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
@@ -130,6 +143,16 @@ class XmlClsEditor(QMainWindow):
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.collapse_all_action)
         view_menu.addAction(self.expand_all_action)
+
+        self.journal_menu = self.menuBar().addMenu("&Journal")
+        self.journal_menu.addAction(self.create_journal_action)
+        self.journal_menu.addAction(self.undo_journal_action)
+        self.journal_menu.addSeparator()
+        self.journal_menu.addAction(self.mark_release_action)
+        self.journal_menu.addAction(self.mark_restore_point_action)
+        self.restore_menu = self.journal_menu.addMenu("&Restore")
+        self.restore_menu.setToolTipsVisible(True)
+        self.journal_menu.aboutToShow.connect(self.refresh_journal_menu)
 
     def _update_title(self):
         name = Path(self.filename).name if self.filename else "Untitled"
@@ -164,8 +187,90 @@ class XmlClsEditor(QMainWindow):
             return
         self.dom = dom
         self.filename = str(filename)
+        journal = self.journal_filename()
+        if journal.exists() and not self.dom.OpenJournal(str(journal)):
+            self._error("Open journal failed", self._dom_error())
         self._set_dirty(False)
         self.populate_tree()
+        self.refresh_journal_menu()
+
+    def journal_filename(self) -> Path:
+        return Path(f"{self.filename}.jrnl") if self.filename else Path()
+
+    def refresh_journal_menu(self):
+        enabled = bool(self.dom and self.dom.HasJournal())
+        exists = bool(self.filename and self.journal_filename().exists())
+        self.create_journal_action.setEnabled(bool(self.dom) and not enabled and not exists)
+        self.undo_journal_action.setEnabled(enabled)
+        self.mark_release_action.setEnabled(enabled)
+        self.mark_restore_point_action.setEnabled(enabled)
+        self.restore_menu.setEnabled(enabled)
+        self.restore_menu.clear()
+
+        if not enabled:
+            return
+        points = self.dom.RestorePoints()
+        if not points:
+            empty = self.restore_menu.addAction("(No restore points)")
+            empty.setEnabled(False)
+            return
+        for point in reversed(points):
+            action = self.restore_menu.addAction(point.jid)
+            action.setToolTip(point.note)
+            action.setStatusTip(point.note)
+            action.triggered.connect(lambda checked=False, jid=point.jid: self.restore(jid))
+
+    def create_journal(self):
+        if not self.dom or not self.filename:
+            return
+        filename = self.journal_filename()
+        if self.dom.CreateJournal(str(filename)):
+            self.refresh_journal_menu()
+        else:
+            self._error("Create journal failed", self._dom_error())
+
+    def _journal_comment(self, title: str) -> tuple[str, bool]:
+        return QInputDialog.getMultiLineText(self, title, "Comment:")
+
+    def mark_release(self):
+        note, accepted = self._journal_comment("Mark Release")
+        if not accepted:
+            return
+        if not self.dom.MarkRelease(note):
+            self._error("Mark release failed", self._dom_error())
+
+    def undo_journal(self):
+        if not self.dom or not self.dom.Undo():
+            self._error("Undo failed", self._dom_error())
+            return
+        self.populate_tree()
+        self._set_dirty(True)
+        self.refresh_journal_menu()
+
+    def mark_restore_point(self):
+        note, accepted = self._journal_comment("Mark Restore Point")
+        if not accepted:
+            return
+        if not self.dom.MarkRestorePoint(note):
+            self._error("Mark restore point failed", self._dom_error())
+            return
+        self._set_dirty(True)
+        self.refresh_journal_menu()
+
+    def restore(self, jid: str):
+        answer = QMessageBox.question(
+            self, "Restore Journal State", f"Restore the document to state {jid}?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if not self.dom.Restore(jid):
+            self._error("Restore failed", self._dom_error())
+            return
+        self.populate_tree()
+        self._set_dirty(True)
+        self.refresh_journal_menu()
 
     def save(self):
         if not self.dom:
