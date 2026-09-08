@@ -407,6 +407,72 @@ xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML)
 }
 
 /**
+ * @brief Move a node to become the destination node's final child.
+ * @param node Node to move.
+ * @param parent Destination parent node in the same document.
+ * @return 1 on success, otherwise 0.
+ */
+int XmlNode_MoveChild(xmlNodePtr node, xmlNodePtr parent)
+{
+    ClearCError();
+    if (!node || !parent) {
+        SetCError(nullptr, "XmlNode_MoveChild requires a node and parent");
+        return 0;
+    }
+    XmlNode source(node);
+    source.MoveChild(XmlNode(parent));
+    if (source.err) {
+        SetCError(source.err, "Unable to move XML node as child");
+        return 0;
+    }
+    return 1;
+}
+
+/**
+ * @brief Move a node immediately before a destination sibling.
+ * @param node Node to move.
+ * @param sibling Destination sibling node in the same document.
+ * @return 1 on success, otherwise 0.
+ */
+int XmlNode_MoveBefore(xmlNodePtr node, xmlNodePtr sibling)
+{
+    ClearCError();
+    if (!node || !sibling) {
+        SetCError(nullptr, "XmlNode_MoveBefore requires a node and sibling");
+        return 0;
+    }
+    XmlNode source(node);
+    source.MoveBefore(XmlNode(sibling));
+    if (source.err) {
+        SetCError(source.err, "Unable to move XML node before selection");
+        return 0;
+    }
+    return 1;
+}
+
+/**
+ * @brief Move a node immediately after a destination sibling.
+ * @param node Node to move.
+ * @param sibling Destination sibling node in the same document.
+ * @return 1 on success, otherwise 0.
+ */
+int XmlNode_MoveAfter(xmlNodePtr node, xmlNodePtr sibling)
+{
+    ClearCError();
+    if (!node || !sibling) {
+        SetCError(nullptr, "XmlNode_MoveAfter requires a node and sibling");
+        return 0;
+    }
+    XmlNode source(node);
+    source.MoveAfter(XmlNode(sibling));
+    if (source.err) {
+        SetCError(source.err, "Unable to move XML node after selection");
+        return 0;
+    }
+    return 1;
+}
+
+/**
  * @brief Delete a node from its document.
  * @param node Node to delete.
  * @return 1 on success, otherwise 0.

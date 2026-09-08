@@ -583,6 +583,13 @@ void XmlNode::Move(Pos pos)
         return;
     }
 
+    if (!JRNL) {
+        xmlUnlinkNode(node);
+        if (!pos.Place(node))
+            err = new Error{lvl::ERR, "Cannot Move: XML insertion failed", GetPath()};
+        return;
+    }
+
     ActionMove action(*JRNL, *this);
     if (action.err) { err = action.err; return; }
 
@@ -600,6 +607,21 @@ void XmlNode::Move(Pos pos)
 template void XmlNode::Move<Before>(Before);
 template void XmlNode::Move<After>(After);
 template void XmlNode::Move<Child>(Child);
+
+void XmlNode::MoveChild(XmlNode parent)
+{
+    Move(Child{parent});
+}
+
+void XmlNode::MoveBefore(XmlNode sibling)
+{
+    Move(Before{sibling});
+}
+
+void XmlNode::MoveAfter(XmlNode sibling)
+{
+    Move(After{sibling});
+}
 
 std::string XmlNode::JID()
 {

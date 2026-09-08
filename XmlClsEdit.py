@@ -5,7 +5,7 @@ import sys
 from ctypes import c_char_p, c_void_p
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QByteArray, QMimeData, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QMainWindow, QMessageBox,
@@ -16,6 +16,7 @@ from XmlCls import XmlCls, XmlNode
 
 
 XML_NODE_ROLE = int(Qt.ItemDataRole.UserRole)
+CUT_MIME = "application/x-xmlcls-cut"
 
 
 class DirectEditor(QDialog):
@@ -54,6 +55,9 @@ class XmlClsEditor(QMainWindow):
         self.dom: XmlCls | None = None
         self.filename: str | None = None
         self.dirty = False
+        self.cut_node: c_void_p | None = None
+
+        QApplication.clipboard().dataChanged.connect(self.clipboard_changed)
 
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(["Element", "Content"])
@@ -69,7 +73,7 @@ class XmlClsEditor(QMainWindow):
             self.open_file(filename)
 
     def _create_actions(self):
-        self.open_action = QAction("&Open", self)
+        self.open_action = QAction("&Open...", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self.open)
 
@@ -85,6 +89,10 @@ class XmlClsEditor(QMainWindow):
         self.copy_action.setShortcut(QKeySequence.StandardKey.Copy)
         self.copy_action.triggered.connect(self.copy_xml)
 
+        self.cut_action = QAction("Cu&t", self)
+        self.cut_action.setShortcut(QKeySequence.StandardKey.Cut)
+        self.cut_action.triggered.connect(self.cut_xml)
+
         self.paste_action = QAction("&Paste", self)
         self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
         self.paste_action.triggered.connect(lambda: self.paste_xml("AddChild"))
@@ -95,7 +103,7 @@ class XmlClsEditor(QMainWindow):
         self.paste_before_action = QAction("Paste &Before", self)
         self.paste_before_action.triggered.connect(lambda: self.paste_xml("AddBefore"))
 
-        self.direct_action = QAction("&Direct", self)
+        self.direct_action = QAction("&Direct...", self)
         self.direct_action.triggered.connect(self.direct_edit)
 
         # The editor's motivating operation; remove if Delete belongs elsewhere.
@@ -118,10 +126,10 @@ class XmlClsEditor(QMainWindow):
         self.undo_journal_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_journal_action.triggered.connect(self.undo_journal)
 
-        self.mark_release_action = QAction("Mark &Release", self)
+        self.mark_release_action = QAction("Mark &Release...", self)
         self.mark_release_action.triggered.connect(self.mark_release)
 
-        self.mark_restore_point_action = QAction("Mark Restore &Point", self)
+        self.mark_restore_point_action = QAction("Mark Restore &Point...", self)
         self.mark_restore_point_action.triggered.connect(self.mark_restore_point)
 
     def _create_menus(self):
@@ -133,6 +141,7 @@ class XmlClsEditor(QMainWindow):
 
         edit_menu = self.menuBar().addMenu("&Edit")
         edit_menu.addAction(self.copy_action)
+        edit_menu.addAction(self.cut_action)
         edit_menu.addAction(self.paste_action)
         edit_menu.addAction(self.paste_after_action)
         edit_menu.addAction(self.paste_before_action)
@@ -157,7 +166,7 @@ class XmlClsEditor(QMainWindow):
     def _update_title(self):
         name = Path(self.filename).name if self.filename else "Untitled"
         mark = "*" if self.dirty else ""
-        self.setWindowTitle(f"XmlClsEdit: {name}{mark}")
+        self.setWindowTitle(f"{name}{mark} - XmlClsEdit")
 
     def _set_dirty(self, dirty=True):
         self.dirty = dirty
@@ -181,6 +190,7 @@ class XmlClsEditor(QMainWindow):
             self.open_file(filename)
 
     def open_file(self, filename: str):
+        self.cancel_cut()
         dom = XmlCls(c_char_p(str(filename).encode("utf-8")))
         if not dom.doc:
             self._error("Open failed", getattr(dom.err, "msg", "Unable to parse the XML file"))
@@ -313,7 +323,7 @@ class XmlClsEditor(QMainWindow):
     def _content_summary(node: XmlNode) -> str:
         text = node.XPath("normalize-space(text())", str)
         if len(text) > 100:
-            text = text[:97] + "-"
+            text = text[:97] + "..."
         return text
 
     def current_node(self) -> XmlNode | None:
@@ -330,10 +340,41 @@ class XmlClsEditor(QMainWindow):
         if node:
             QApplication.clipboard().setText(node.XML())
 
+    def cut_xml(self):
+        node = self.current_node()
+        if not node:
+            return
+
+        mime = QMimeData()
+        mime.setText(node.XML())
+        mime.setData(CUT_MIME, QByteArray(b"cut"))
+        self.cut_node = c_void_p(node.node.value)
+        QApplication.clipboard().setMimeData(mime)
+
+    def clipboard_changed(self):
+        mime = QApplication.clipboard().mimeData()
+        if not mime or not mime.hasFormat(CUT_MIME):
+            self.cut_node = None
+
+    def cancel_cut(self):
+        self.cut_node = None
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime and mime.hasFormat(CUT_MIME):
+            clipboard.setText(mime.text())
+
     def paste_xml(self, operation: str):
         node = self.current_node()
-        xml = QApplication.clipboard().text().strip()
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        xml = clipboard.text().strip()
         if not node or not xml:
+            return
+
+        if self.cut_node and mime and mime.hasFormat(CUT_MIME):
+            source = XmlNode(self.dom, c_void_p(self.cut_node.value))
+            move = {"AddChild": "MoveChild", "AddBefore": "MoveBefore", "AddAfter": "MoveAfter"}[operation]
+            self._mutate(source, move, node)
             return
         self._mutate(node, operation, xml)
 
@@ -361,6 +402,7 @@ class XmlClsEditor(QMainWindow):
             return
         self.populate_tree()
         self._set_dirty(True)
+        self.cancel_cut()
 
     def _dom_error(self) -> str:
         if self.dom and getattr(self.dom, "err", None):

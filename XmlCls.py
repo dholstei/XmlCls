@@ -183,6 +183,12 @@ class XmlCls:
         cls._xlib.XmlNode_AddBefore.restype = c_void_p
         cls._xlib.XmlNode_AddAfter.argtypes = [c_void_p, c_char_p]
         cls._xlib.XmlNode_AddAfter.restype = c_void_p
+        cls._xlib.XmlNode_MoveChild.argtypes = [c_void_p, c_void_p]
+        cls._xlib.XmlNode_MoveChild.restype = c_int
+        cls._xlib.XmlNode_MoveBefore.argtypes = [c_void_p, c_void_p]
+        cls._xlib.XmlNode_MoveBefore.restype = c_int
+        cls._xlib.XmlNode_MoveAfter.argtypes = [c_void_p, c_void_p]
+        cls._xlib.XmlNode_MoveAfter.restype = c_int
         cls._xlib.XmlNode_Delete.argtypes = [c_void_p]
         cls._xlib.XmlNode_Delete.restype = c_int
 
@@ -533,6 +539,24 @@ class XmlNode:
 
     def AddAfter(self, XML: str):
         return self._Add(self.owner._xlib.XmlNode_AddAfter, XML)
+
+    def _Move(self, function, destination: "XmlNode") -> bool:
+        if not isinstance(destination, XmlNode):
+            raise TypeError("destination must be an XmlNode")
+        if not function(self.node, destination.node):
+            self.owner.CAPI_err("Move")
+            return False
+        self.owner.err = Error()
+        return True
+
+    def MoveChild(self, parent: "XmlNode") -> bool:
+        return self._Move(self.owner._xlib.XmlNode_MoveChild, parent)
+
+    def MoveBefore(self, sibling: "XmlNode") -> bool:
+        return self._Move(self.owner._xlib.XmlNode_MoveBefore, sibling)
+
+    def MoveAfter(self, sibling: "XmlNode") -> bool:
+        return self._Move(self.owner._xlib.XmlNode_MoveAfter, sibling)
 
     def Delete(self) -> bool:
         if not self.owner._xlib.XmlNode_Delete(self.node):

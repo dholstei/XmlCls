@@ -1330,6 +1330,33 @@ void test_journal_move_before()
     std::remove(path);
 }
 
+void test_named_move_methods_without_journal()
+{
+    banner("Named XmlNode move methods without journal");
+
+    XmlDoc doc(std::string("<Root><A/><B/><Group><C/></Group></Root>"));
+    CHECK(!doc.err);
+
+    XmlNode a = doc.XPath<XmlNode>("/Root/A");
+    XmlNode b = doc.XPath<XmlNode>("/Root/B");
+    XmlNode group = doc.XPath<XmlNode>("/Root/Group");
+
+    a.MoveAfter(b);
+    CHECK(!a.err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("A"));
+
+    a.MoveBefore(b);
+    CHECK(!a.err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("B"));
+
+    a.MoveChild(group);
+    CHECK(!a.err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/Group/*)"), 2);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/Group/*[2])"), std::string("A"));
+}
+
 void test_journal_move_after()
 {
     banner("ActionMove::MoveAfter / Undo");
@@ -1758,6 +1785,7 @@ int main()
     test_journal_build_jid_map_with_state();
     test_journal_state_validation();
     test_relative_journal_filename();
+    test_named_move_methods_without_journal();
     test_journal_move_before();
     test_journal_move_after();
     test_journal_move_child();
