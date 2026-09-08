@@ -17,9 +17,12 @@ The design aligns well with systems that require deterministic behavior, auditab
 - **XmlCls.cpp** – Parsing, XPath evaluation, mutation, journaling, and undo implementations.
 - **XmlClsLib.cpp** – Minimal language-neutral `extern "C"` facade over selected C++ `XmlNode` operations.
 - **XmlCls.py** – Lightweight Python/`ctypes` interface using libxml2 directly for document parsing and XPath, with selected C++ operations exposed through `XmlClsLib.so`.
+- **XmlClsEdit.py** – Lightweight PyQt6 tree editor built on the Python and C interfaces.
 
 ## Dependencies
 - **libxml2** (headers and library)
+- **Python 3.10 or later** (optional Python interface and editor)
+- **PyQt6** (optional editor)
 
 Typical Linux packages:
 ```bash
@@ -28,6 +31,12 @@ libxml2-devel  (RHEL/CentOS/Fedora)
 ```
 
 On Windows, libxml2 must be provided explicitly (vcpkg, Conan, or a locally built distribution).
+
+PyQt6 may be installed into the active Python environment with:
+
+```bash
+python3 -m pip install PyQt6
+```
 
 ## Core Concepts
 
@@ -134,7 +143,31 @@ As in the C++ interface, routine XML and XPath errors are reported through an `E
 
 ### `XmlClsLib.so`
 
-Selected C++ functionality is exposed through a small language-neutral `extern "C"` facade in `XmlClsLib.so`. The initial interface exposes `XmlNode::XML()` while keeping the ABI independent of Python.
+Selected C++ functionality is exposed through a small language-neutral `extern "C"` facade in `XmlClsLib.so`. The ABI remains independent of Python and covers document attachment, saving, journal control, restore points, node serialization, and mutation:
+
+```c
+void* XmlDoc_Attach(xmlDocPtr doc);
+void XmlDoc_Detach(void* owner);
+int XmlDoc_Save(void* owner, const char* filename);
+
+int XmlDoc_OpenJournal(void* owner, const char* filename);
+int XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML);
+int XmlDoc_Undo(void* owner);
+int XmlDoc_HasJournal(void* owner);
+int XmlDoc_MarkRelease(void* owner, const char* note);
+int XmlDoc_MarkRestorePoint(void* owner, const char* note, char* jid, size_t capacity);
+size_t XmlDoc_RestorePoints(void* owner, char* buffer, size_t capacity);
+int XmlDoc_Restore(void* owner, const char* jid);
+
+size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t capacity);
+xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML);
+xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML);
+xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML);
+xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML);
+int XmlNode_Delete(xmlNodePtr node);
+
+const char* XmlCls_LastError(void);
+```
 
 The XML serialization interface uses a caller-provided buffer rather than returning an allocation owned by C++:
 
@@ -145,6 +178,41 @@ size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t size);
 This keeps allocation ownership on the caller's side and makes the same shared library usable from Python, C#, LabVIEW, and other environments capable of calling a C ABI.
 
 All object code linked into `XmlClsLib.so`, including objects extracted from static libraries, must be compiled as position-independent code (`-fPIC`).
+
+`XmlCls_LastError()` returns thread-local storage owned by the library. Callers
+must copy the message if it must survive the next C-interface call on that
+thread.
+
+### `XmlClsEdit.py`
+
+`XmlClsEdit.py` presents the source DOM as a `QTreeWidget`. Each tree item stores
+the corresponding `xmlNodePtr`; a lightweight Python `XmlNode` is created only
+when an operation needs it. The canonical `XmlCls` document remains alive for
+the lifetime of the editor window.
+
+Run the editor with an optional XML filename:
+
+```bash
+python3 XmlClsEdit.py
+python3 XmlClsEdit.py PonziCoin.xml
+```
+
+The menus provide:
+
+- **File**: Open, Save, and Quit.
+- **Edit**: Copy XML, paste as a child, paste before or after the selected node,
+  delete the selected node, and directly edit the selected XML fragment.
+- **View**: Collapse All and Expand All.
+- **Journal**: Create, one-level Undo, Mark Release, Mark Restore Point, and a
+  Restore submenu populated from the attached journal.
+
+The window title marks unsaved source-DOM changes with `*`. Structural drag and
+drop is intentionally deferred. Attribute editing is available through the
+Direct XML editor.
+
+The editor and native C++ API use the same mutation implementation. Python does
+not independently reproduce Add, Modify, Deletion, Undo, or Restore semantics;
+those operations cross the C ABI into `XmlCls`.
 
 ## Mutation Journaling
 
@@ -166,6 +234,31 @@ example `{0, 2, 1}` represents Release `0.2.1`.
 
 `OpenJournal()` and `CreateJournal()` are deleted on `XmlJrnl` itself so that a
 journal cannot recursively journal another journal.
+
+### Persistent Journal Association
+
+A source document declares a persistent journal with attributes on its document
+element:
+
+```xml
+<PonziCoin JRNL="PonziCoin.xml.jrnl"
+           STATE_JID="0123456789abcdef">
+```
+
+The document element may have any name. `JRNL` contains the journal filename;
+relative names are resolved from the source XML file's directory. Appending
+`.jrnl` to the complete source filename gives predictable names such as
+`PonziCoin.xml.jrnl`, `conf_file.yaml.jrnl`, or `conf_file.json.jrnl`.
+
+`STATE_JID` identifies the journal state represented by the saved source DOM.
+On save, `XmlCls` stamps a new journal State, writes its JID to the source
+document element, saves the source, and then saves the journal. Opening an
+existing journal validates this association; an absent, unknown, or stale state
+makes the source immutable and reports a warning.
+
+Journal metadata is stored as attributes rather than as a child element so it
+does not change application child counts, sibling relationships, deletion
+anchors, or move semantics.
 
 ### Journal IDs (`JID`)
 
@@ -342,14 +435,20 @@ node.XPath<T>(query);
 node.XML();
 node.parse(xml);
 node.AddChild(xml);
+node.AddBefore(xml);
+node.AddAfter(xml);
+node.MoveChild(parent);
+node.MoveBefore(sibling);
+node.MoveAfter(sibling);
 node.Delete();
 node.GetPath();
 node.JID();
 node.JID(jid);
 ```
 
-When a node belongs to a journal-enabled document, `parse()`, `AddChild()`, and
-`Delete()` automatically generate the corresponding journal transaction.
+When a node belongs to a journal-enabled document, replacement, addition,
+movement, and deletion automatically generate the corresponding journal
+transaction.
 
 ### `XmlJrnl`
 
@@ -372,6 +471,10 @@ void Undo(std::vector<XmlNode> action_nodes);
 void RefreshActiveRelease();
 void BuildJIDMap();
 std::string JID();
+std::string StampState(std::string type, std::string note);
+void MarkRelease(std::string note = "");
+void Restore(std::string jid);
+void ValidateState();
 ```
 
 ## Usage Example
@@ -434,13 +537,10 @@ The journal implementation has regression coverage for:
 - Parent-deletion conflict detection with `lvl::INFO`.
 - Add recording and undo.
 - Reversal state and timestamp behavior.
-
-At the current development checkpoint, the XmlCls test suite reports:
-
-```text
-249 check(s) passed.
-SUCCESS: All XmlCls tests passed.
-```
+- Move-before, move-after, and move-child recording and undo.
+- Move no-op detection and move-conflict handling.
+- State stamping and source/journal state validation.
+- Persistent journal metadata and relative journal filenames.
 
 ## Notes
 

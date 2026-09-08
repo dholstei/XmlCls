@@ -31,6 +31,16 @@ XmlDoc* CDoc(void* owner)
 
 extern "C" {
 
+/**
+ * @brief Attach a canonical C++ XmlDoc wrapper to an existing libxml2 document.
+ * @param doc Borrowed libxml2 document pointer. The document must not already
+ *            have an owner stored in xmlDoc::_private.
+ * @return Opaque XmlDoc owner handle, or nullptr on failure.
+ *
+ * The returned wrapper does not assume ownership of @p doc. Release the wrapper
+ * with XmlDoc_Detach(). Details for a failed call are available through
+ * XmlCls_LastError().
+ */
 void* XmlDoc_Attach(xmlDocPtr doc)
 {
     ClearCError();
@@ -45,6 +55,12 @@ void* XmlDoc_Attach(xmlDocPtr doc)
     return new XmlDoc(doc);
 }
 
+/**
+ * @brief Release an opaque XmlDoc owner created by XmlDoc_Attach().
+ * @param owner Opaque XmlDoc owner handle; nullptr is accepted.
+ *
+ * The underlying xmlDocPtr remains owned by the caller.
+ */
 void XmlDoc_Detach(void* owner)
 {
     ClearCError();
@@ -55,6 +71,12 @@ void XmlDoc_Detach(void* owner)
     delete wrapper;
 }
 
+/**
+ * @brief Save an attached XML document.
+ * @param owner Opaque XmlDoc owner handle.
+ * @param filename Destination XML filename encoded as UTF-8.
+ * @return 1 on success, otherwise 0.
+ */
 int XmlDoc_Save(void* owner, const char* filename)
 {
     ClearCError();
@@ -72,6 +94,13 @@ int XmlDoc_Save(void* owner, const char* filename)
     return 1;
 }
 
+/**
+ * @brief Open and attach an existing mutation journal.
+ * @param owner Opaque XmlDoc owner handle for the source DOM.
+ * @param filename Journal filename encoded as UTF-8. A relative filename is
+ *                 resolved relative to the source XML file.
+ * @return 1 when the journal opens and validates, otherwise 0.
+ */
 int XmlDoc_OpenJournal(void* owner, const char* filename)
 {
     ClearCError();
@@ -89,6 +118,15 @@ int XmlDoc_OpenJournal(void* owner, const char* filename)
     return 1;
 }
 
+/**
+ * @brief Create and attach a mutation journal.
+ * @param owner Opaque XmlDoc owner handle for the source DOM.
+ * @param filename Journal filename encoded as UTF-8. The value is recorded in
+ *                 the source document element's JRNL attribute.
+ * @param XML Optional complete journal seed document encoded as UTF-8; nullptr
+ *            or an empty string selects the default journal structure.
+ * @return 1 on success, otherwise 0.
+ */
 int XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML)
 {
     ClearCError();
@@ -106,6 +144,11 @@ int XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML)
     return 1;
 }
 
+/**
+ * @brief Undo the most recent unreversed action in the active release.
+ * @param owner Opaque XmlDoc owner handle with an attached journal.
+ * @return 1 on success, otherwise 0.
+ */
 int XmlDoc_Undo(void* owner)
 {
     ClearCError();
@@ -123,6 +166,12 @@ int XmlDoc_Undo(void* owner)
     return 1;
 }
 
+/**
+ * @brief Report whether a mutable document has an attached journal.
+ * @param owner Opaque XmlDoc owner handle.
+ * @return 1 when a valid journal is attached and the source is mutable;
+ *         otherwise 0.
+ */
 int XmlDoc_HasJournal(void* owner)
 {
     ClearCError();
@@ -130,6 +179,12 @@ int XmlDoc_HasJournal(void* owner)
     return wrapper && wrapper->JRNL && !wrapper->immutable ? 1 : 0;
 }
 
+/**
+ * @brief Close the active release and open its next numbered release.
+ * @param owner Opaque XmlDoc owner handle with an attached journal.
+ * @param note Optional UTF-8 release comment; nullptr is treated as empty.
+ * @return 1 on success, otherwise 0.
+ */
 int XmlDoc_MarkRelease(void* owner, const char* note)
 {
     ClearCError();
@@ -147,6 +202,14 @@ int XmlDoc_MarkRelease(void* owner, const char* note)
     return 1;
 }
 
+/**
+ * @brief Add a named restore point to the active journal release.
+ * @param owner Opaque XmlDoc owner handle with an attached journal.
+ * @param note Optional UTF-8 comment; nullptr is treated as empty.
+ * @param jid Caller-provided buffer receiving the 16-character hexadecimal JID.
+ * @param capacity Size of @p jid in bytes; at least 17 bytes are required.
+ * @return 1 on success, otherwise 0.
+ */
 int XmlDoc_MarkRestorePoint(void* owner, const char* note, char* jid, size_t capacity)
 {
     ClearCError();
@@ -170,6 +233,15 @@ int XmlDoc_MarkRestorePoint(void* owner, const char* note, char* jid, size_t cap
     return 1;
 }
 
+/**
+ * @brief Serialize the available restore-point records as XML.
+ * @param owner Opaque XmlDoc owner handle with an attached journal.
+ * @param buffer Caller-provided output buffer, or nullptr to query the size.
+ * @param capacity Size of @p buffer in bytes.
+ * @return Required buffer size including the terminating null byte. Returns 0
+ *         on error. When capacity is insufficient, the required size is
+ *         returned without writing the XML.
+ */
 size_t XmlDoc_RestorePoints(void* owner, char* buffer, size_t capacity)
 {
     ClearCError();
@@ -195,6 +267,12 @@ size_t XmlDoc_RestorePoints(void* owner, char* buffer, size_t capacity)
     return required;
 }
 
+/**
+ * @brief Restore the source DOM to a recorded restore point.
+ * @param owner Opaque XmlDoc owner handle with an attached journal.
+ * @param jid Null-terminated restore-point JID.
+ * @return 1 on success, otherwise 0.
+ */
 int XmlDoc_Restore(void* owner, const char* jid)
 {
     ClearCError();
@@ -212,6 +290,15 @@ int XmlDoc_Restore(void* owner, const char* jid)
     return 1;
 }
 
+/**
+ * @brief Serialize one libxml2 node as XML.
+ * @param node Node to serialize.
+ * @param buffer Caller-provided output buffer, or nullptr to query the size.
+ * @param capacity Size of @p buffer in bytes.
+ * @return Required buffer size including the terminating null byte. Returns 0
+ *         on error; unlike XmlDoc_RestorePoints(), an undersized non-null
+ *         buffer is reported as an error.
+ */
 size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t capacity)
 {
     ClearCError();
@@ -231,6 +318,12 @@ size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t capacity)
     return required;
 }
 
+/**
+ * @brief Replace a node with XML parsed in the context of its document.
+ * @param node Node to replace.
+ * @param XML Null-terminated UTF-8 XML fragment containing one element.
+ * @return Pointer to the replacement node, or nullptr on failure.
+ */
 xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML)
 {
     ClearCError();
@@ -247,6 +340,12 @@ xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML)
     return wrapper.node;
 }
 
+/**
+ * @brief Parse and append an element as the selected node's final child.
+ * @param node Parent node.
+ * @param XML Null-terminated UTF-8 XML fragment containing one element.
+ * @return Pointer to the added node, or nullptr on failure.
+ */
 xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML)
 {
     ClearCError();
@@ -263,6 +362,12 @@ xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML)
     return added.node;
 }
 
+/**
+ * @brief Parse and insert an element immediately before the selected node.
+ * @param node Reference node.
+ * @param XML Null-terminated UTF-8 XML fragment containing one element.
+ * @return Pointer to the added node, or nullptr on failure.
+ */
 xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML)
 {
     ClearCError();
@@ -279,6 +384,12 @@ xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML)
     return added.node;
 }
 
+/**
+ * @brief Parse and insert an element immediately after the selected node.
+ * @param node Reference node.
+ * @param XML Null-terminated UTF-8 XML fragment containing one element.
+ * @return Pointer to the added node, or nullptr on failure.
+ */
 xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML)
 {
     ClearCError();
@@ -295,6 +406,13 @@ xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML)
     return added.node;
 }
 
+/**
+ * @brief Delete a node from its document.
+ * @param node Node to delete.
+ * @return 1 on success, otherwise 0.
+ *
+ * The supplied xmlNodePtr is invalid after a successful deletion.
+ */
 int XmlNode_Delete(xmlNodePtr node)
 {
     ClearCError();
@@ -311,6 +429,12 @@ int XmlNode_Delete(xmlNodePtr node)
     return 1;
 }
 
+/**
+ * @brief Return the calling thread's most recent C-interface error message.
+ * @return Borrowed null-terminated string owned by XmlClsLib.
+ *
+ * The pointer remains valid until the next C-interface call on the same thread.
+ */
 const char* XmlCls_LastError()
 {
     return c_api_error.c_str();
