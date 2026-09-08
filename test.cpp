@@ -976,6 +976,7 @@ void test_journal_stamp_state()
      * Source DOM must identify the State it corresponds to.
      */
     CHECK_EQ(doc.XPath<std::string>("/Root/@STATE_JID"), state_jid);
+    CHECK_EQ(doc.XPath<std::string>("/Root/@JRNL"), std::string(path));
 
     /*
      * Journal State must carry the same identity and metadata.
@@ -1011,7 +1012,7 @@ void test_journal_build_jid_map_with_state()
     banner("XmlJrnl::BuildJIDMap with State");
 
     XmlDoc doc(std::string(
-        "<Root JID=\"1111111111111111\" STATE_JID=\"3333333333333333\">"
+        "<Root JID=\"1111111111111111\" JRNL=\"journal.xml\" STATE_JID=\"3333333333333333\">"
         "  <A JID=\"2222222222222222\"/>"
         "</Root>"
     ));
@@ -1056,7 +1057,7 @@ void test_journal_state_validation()
      * ------------------------------------------------------------
      * Create and save a valid DOM/JRNL pair.
      * Save() should StampState("Save"), write STATE_JID into the
-     * source root, save the source DOM, then save the journal.
+     * source document element, save the source DOM, then save the journal.
      * ------------------------------------------------------------
      */
     {
@@ -1106,6 +1107,7 @@ void test_journal_state_validation()
         CHECK(!doc.immutable);
 
         CHECK_EQ(doc.XPath<std::string>("/*/@STATE_JID"), state_jid);
+        CHECK_EQ(doc.XPath<std::string>("/*/@JRNL"), std::string(jrnl_path));
         CHECK_EQ(doc.JRNL->XPath<std::string>("(//State)[last()]/@JID"), state_jid);
     }
 
@@ -1182,6 +1184,45 @@ void test_journal_state_validation()
             CHECK(a.err->level == lvl::WARN);
 
         CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("original"));
+    }
+
+    std::remove(dom_path);
+    std::remove(jrnl_path);
+}
+
+void test_relative_journal_filename()
+{
+    banner("Relative journal filename metadata");
+
+    const char* dom_path = "/tmp/xmlcls_relative_journal.xml";
+    const char* jrnl_name = "xmlcls_relative_journal.xml.jrnl";
+    const char* jrnl_path = "/tmp/xmlcls_relative_journal.xml.jrnl";
+
+    {
+        XmlDoc doc(std::string("<Root><A/></Root>"));
+        CHECK(!doc.err);
+
+        doc.Save(dom_path);
+        CHECK(!doc.err);
+
+        doc.CreateJournal(jrnl_name);
+        CHECK(doc.JRNL != nullptr);
+        CHECK(!doc.JRNL->err);
+        CHECK_EQ(doc.XPath<std::string>("/*/@JRNL"), std::string(jrnl_name));
+
+        doc.Save();
+        CHECK(!doc.err);
+    }
+
+    {
+        XmlDoc doc(dom_path);
+        CHECK(!doc.err);
+        CHECK_EQ(doc.XPath<std::string>("/*/@JRNL"), std::string(jrnl_name));
+
+        doc.OpenJournal(jrnl_name);
+        CHECK(doc.JRNL != nullptr);
+        CHECK(!doc.err);
+        CHECK(!doc.immutable);
     }
 
     std::remove(dom_path);
@@ -1716,6 +1757,7 @@ int main()
     test_journal_stamp_state();
     test_journal_build_jid_map_with_state();
     test_journal_state_validation();
+    test_relative_journal_filename();
     test_journal_move_before();
     test_journal_move_after();
     test_journal_move_child();

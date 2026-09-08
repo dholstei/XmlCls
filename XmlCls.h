@@ -165,13 +165,16 @@ public:
 
     /**
      * @brief Attach an existing journal file to this document.
-     * @param filename Journal XML file.
+     * @param filename Journal XML file, resolved relative to the source XML
+     *                 file when it is not absolute.
      */
     void OpenJournal(const char* filename);
 
     /**
      * @brief Create and attach a journal to this document.
-     * @param filename Destination journal filename.
+     * @param filename Destination journal filename.  The value is stored in
+     *                 the document element's JRNL attribute; relative paths
+     *                 are resolved from the source XML file for journal I/O.
      * @param XML Optional journal seed XML.  If empty, a default open release
      *            hierarchy is created.
      */

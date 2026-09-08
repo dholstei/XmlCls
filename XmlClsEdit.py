@@ -69,7 +69,7 @@ class XmlClsEditor(QMainWindow):
             self.open_file(filename)
 
     def _create_actions(self):
-        self.open_action = QAction("&Open…", self)
+        self.open_action = QAction("&Open", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.open_action.triggered.connect(self.open)
 
@@ -95,7 +95,7 @@ class XmlClsEditor(QMainWindow):
         self.paste_before_action = QAction("Paste &Before", self)
         self.paste_before_action.triggered.connect(lambda: self.paste_xml("AddBefore"))
 
-        self.direct_action = QAction("&Direct…", self)
+        self.direct_action = QAction("&Direct", self)
         self.direct_action.triggered.connect(self.direct_edit)
 
         # The editor's motivating operation; remove if Delete belongs elsewhere.
@@ -118,10 +118,10 @@ class XmlClsEditor(QMainWindow):
         self.undo_journal_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_journal_action.triggered.connect(self.undo_journal)
 
-        self.mark_release_action = QAction("Mark &Release…", self)
+        self.mark_release_action = QAction("Mark &Release", self)
         self.mark_release_action.triggered.connect(self.mark_release)
 
-        self.mark_restore_point_action = QAction("Mark Restore &Point…", self)
+        self.mark_restore_point_action = QAction("Mark Restore &Point", self)
         self.mark_restore_point_action.triggered.connect(self.mark_restore_point)
 
     def _create_menus(self):
@@ -157,7 +157,7 @@ class XmlClsEditor(QMainWindow):
     def _update_title(self):
         name = Path(self.filename).name if self.filename else "Untitled"
         mark = "*" if self.dirty else ""
-        self.setWindowTitle(f"{name}{mark} — XmlClsEdit")
+        self.setWindowTitle(f"XmlClsEdit: {name}{mark}")
 
     def _set_dirty(self, dirty=True):
         self.dirty = dirty
@@ -187,20 +187,18 @@ class XmlClsEditor(QMainWindow):
             return
         self.dom = dom
         self.filename = str(filename)
-        journal = self.journal_filename()
-        if journal.exists() and not self.dom.OpenJournal(str(journal)):
-            self._error("Open journal failed", self._dom_error())
+        journal = self.dom.XPath("string(/*/@JRNL)", str)
+        if journal:
+            if not self.dom.OpenJournal(journal):
+                self._error("Open journal failed", self._dom_error())
         self._set_dirty(False)
         self.populate_tree()
         self.refresh_journal_menu()
 
-    def journal_filename(self) -> Path:
-        return Path(f"{self.filename}.jrnl") if self.filename else Path()
-
     def refresh_journal_menu(self):
         enabled = bool(self.dom and self.dom.HasJournal())
-        exists = bool(self.filename and self.journal_filename().exists())
-        self.create_journal_action.setEnabled(bool(self.dom) and not enabled and not exists)
+        declared = bool(self.dom and self.dom.XPath("boolean(/*/@JRNL)", bool))
+        self.create_journal_action.setEnabled(bool(self.dom) and not enabled and not declared)
         self.undo_journal_action.setEnabled(enabled)
         self.mark_release_action.setEnabled(enabled)
         self.mark_restore_point_action.setEnabled(enabled)
@@ -223,8 +221,10 @@ class XmlClsEditor(QMainWindow):
     def create_journal(self):
         if not self.dom or not self.filename:
             return
-        filename = self.journal_filename()
-        if self.dom.CreateJournal(str(filename)):
+        filename = f"{Path(self.filename).name}.jrnl"
+        if self.dom.CreateJournal(filename):
+            self.populate_tree()
+            self._set_dirty(True)
             self.refresh_journal_menu()
         else:
             self._error("Create journal failed", self._dom_error())
@@ -313,7 +313,7 @@ class XmlClsEditor(QMainWindow):
     def _content_summary(node: XmlNode) -> str:
         text = node.XPath("normalize-space(text())", str)
         if len(text) > 100:
-            text = text[:97] + "…"
+            text = text[:97] + "-"
         return text
 
     def current_node(self) -> XmlNode | None:

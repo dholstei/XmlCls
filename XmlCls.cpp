@@ -36,6 +36,21 @@ Error* SetXmlError(const std::string& context) {
     return err;
 }
 
+namespace {
+
+std::string JournalPath(const XmlDoc& source, const char* filename)
+{
+    std::string path = filename ? filename : "";
+    if (path.empty() || path.front() == '/' || !source.doc || !source.doc->URL)
+        return path;
+
+    std::string source_path = (const char*)source.doc->URL;
+    std::size_t slash = source_path.find_last_of('/');
+    return slash == std::string::npos ? path : source_path.substr(0, slash + 1) + path;
+}
+
+}
+
 XmlDoc::XmlDoc(const char *filename)
     : doc(xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS))
 {
@@ -95,7 +110,8 @@ XmlDoc::~XmlDoc()
 
 void XmlDoc::OpenJournal(const char* filename)
 {
-    JRNL = new XmlJrnl(*this, filename);
+    const std::string path = JournalPath(*this, filename);
+    JRNL = new XmlJrnl(*this, path.c_str());
 
     if (JRNL->err) {
         immutable = true;
@@ -116,6 +132,17 @@ void XmlDoc::OpenJournal(const char* filename)
 
 void XmlDoc::CreateJournal(const char* filename, std::string XML)
 {
+    if (!filename || !*filename) {
+        err = new Error{lvl::ERR, "Cannot create journal: filename is empty", ""};
+        return;
+    }
+
+    xmlNodePtr root = xmlDocGetRootElement(doc);
+    if (!root || !xmlSetProp(root, BAD_CAST "JRNL", BAD_CAST filename)) {
+        err = new Error{lvl::ERR, "Cannot set source JRNL filename", ""};
+        return;
+    }
+
     char* seed =
         "<JRNL>"
         "  <Release Number=\"0\" Open=\"%s\" Close=\"\">"
@@ -137,7 +164,8 @@ void XmlDoc::CreateJournal(const char* filename, std::string XML)
         return;
     }
 
-    JRNL->Save(filename);
+    const std::string path = JournalPath(*this, filename);
+    JRNL->Save(path.c_str());
 
     if (JRNL->err) {
         err = JRNL->err;
@@ -927,13 +955,11 @@ std::string XmlJrnl::StampState(std::string type, std::string note)
         return {};
     }
 
-    auto roots = source_doc.XPath<std::vector<XmlNode>>("/*");
-    if (roots.empty()) {
-        err = new Error{lvl::ERR, "Cannot stamp state: source document has no root node", ""};
+    xmlNodePtr root = xmlDocGetRootElement(source_doc.doc);
+    if (!root) {
+        err = new Error{lvl::ERR, "Cannot stamp state: source document has no document element", ""};
         return {};
     }
-
-    XmlNode root = roots[0];
     const std::string jid = JID();
 
     XmlNode state = active_release.AddChild("<State/>");
@@ -962,8 +988,8 @@ std::string XmlJrnl::StampState(std::string type, std::string note)
      */
     jid_map[jid] = nullptr;
 
-    if (!xmlSetProp(root.node, BAD_CAST "STATE_JID", BAD_CAST jid.c_str())) {
-        err = new Error{lvl::ERR, "Cannot stamp state: unable to set source STATE_JID", root.GetPath()};
+    if (!xmlSetProp(root, BAD_CAST "STATE_JID", BAD_CAST jid.c_str())) {
+        err = new Error{lvl::ERR, "Cannot stamp state: unable to set source STATE_JID", ""};
         return {};
     }
 
@@ -1045,7 +1071,7 @@ void XmlJrnl::Restore(std::string jid)
 
 void XmlJrnl::ValidateState()
 {
-    const std::string source_state = source_doc.XPath<std::string>("/*/@STATE_JID");
+    const std::string source_state = source_doc.XPath<std::string>("string(/*/@STATE_JID)");
 
     if (source_doc.err) {
         err = source_doc.err;
