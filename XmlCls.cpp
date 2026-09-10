@@ -51,6 +51,17 @@ std::string JournalPath(const XmlDoc& source, const char* filename)
 
 }
 
+XmlDoc::XmlDoc(xmlDocPtr doc)
+    : doc(doc)
+{
+    if (!doc) {
+        err = new Error{lvl::ERR, "Cannot attach a NULL xmlDocPtr", ""};
+        return;
+    }
+    doc->_private = this;
+    OpenDeclaredJournal();
+}
+
 XmlDoc::XmlDoc(const char *filename)
     : doc(xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS))
 {
@@ -61,6 +72,7 @@ XmlDoc::XmlDoc(const char *filename)
         return;
     }
     doc->_private = this;
+    OpenDeclaredJournal();
 }
 
 XmlDoc::XmlDoc(const std::string content)
@@ -74,6 +86,25 @@ XmlDoc::XmlDoc(const std::string content)
         return;
     }
     doc->_private = this;
+    OpenDeclaredJournal();
+}
+
+void XmlDoc::OpenDeclaredJournal()
+{
+    if (!doc || JRNL) return;
+
+    xmlNodePtr root = xmlDocGetRootElement(doc);
+    if (!root) return;
+
+    xmlChar* filename = xmlGetProp(root, BAD_CAST "JRNL");
+    if (!filename || !*filename) {
+        if (filename) xmlFree(filename);
+        return;
+    }
+
+    std::string path(reinterpret_cast<const char*>(filename));
+    xmlFree(filename);
+    OpenJournal(path.c_str());
 }
 
 void XmlDoc::Save(const char* filename) {
@@ -110,6 +141,11 @@ XmlDoc::~XmlDoc()
 
 void XmlDoc::OpenJournal(const char* filename)
 {
+    if (JRNL) {
+        if (JRNL->err) err = JRNL->err;
+        return;
+    }
+
     const std::string path = JournalPath(*this, filename);
     JRNL = new XmlJrnl(*this, path.c_str());
 

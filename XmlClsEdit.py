@@ -197,10 +197,8 @@ class XmlClsEditor(QMainWindow):
             return
         self.dom = dom
         self.filename = str(filename)
-        journal = self.dom.XPath("string(/*/@JRNL)", str)
-        if journal:
-            if not self.dom.OpenJournal(journal):
-                self._error("Open journal failed", self._dom_error())
+        if self.dom.err:
+            self._error("Open journal failed", self._dom_error())
         self._set_dirty(False)
         self.populate_tree()
         self.refresh_journal_menu()
@@ -309,8 +307,11 @@ class XmlClsEditor(QMainWindow):
     def _add_node(self, parent: QTreeWidgetItem | None, node: XmlNode):
         name = node.XPath("name()", str)
         content = self._content_summary(node)
+        tooltip = self._attribute_tooltip(node)
         item = QTreeWidgetItem([name, content])
         item.setData(0, XML_NODE_ROLE, c_void_p(node.node.value))
+        item.setToolTip(0, tooltip)
+        item.setToolTip(1, tooltip)
         if parent is None:
             self.tree.addTopLevelItem(item)
         else:
@@ -325,6 +326,13 @@ class XmlClsEditor(QMainWindow):
         if len(text) > 100:
             text = text[:97] + "..."
         return text
+
+    @staticmethod
+    def _attribute_tooltip(node: XmlNode) -> str:
+        return "\n".join(
+            f'{attribute.XPath("name(.)", str)}    {attribute.XPath("string(.)", str)}'
+            for attribute in node.XPath("./@*", list[XmlNode])
+        )
 
     def current_node(self) -> XmlNode | None:
         if not self.dom:

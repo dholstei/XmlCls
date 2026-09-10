@@ -38,8 +38,10 @@ extern "C" {
  * @return Opaque XmlDoc owner handle, or nullptr on failure.
  *
  * The returned wrapper does not assume ownership of @p doc. Release the wrapper
- * with XmlDoc_Detach(). Details for a failed call are available through
- * XmlCls_LastError().
+ * with XmlDoc_Detach(). If the document element declares a JRNL attribute, its
+ * journal is opened and validated automatically. A journal error leaves the
+ * source DOM attached and readable, but XmlCls_LastError() reports the problem
+ * and journal validation can make the wrapper immutable.
  */
 void* XmlDoc_Attach(xmlDocPtr doc)
 {
@@ -52,7 +54,10 @@ void* XmlDoc_Attach(xmlDocPtr doc)
         SetCError(nullptr, "xmlDocPtr already has a canonical XmlDoc owner");
         return nullptr;
     }
-    return new XmlDoc(doc);
+    XmlDoc* wrapper = new XmlDoc(doc);
+    if (wrapper->err)
+        SetCError(wrapper->err, "Unable to open declared XML journal");
+    return wrapper;
 }
 
 /**

@@ -13,8 +13,9 @@
  *
  * These tests exercise the DOM mutation methods:
  * XmlNode::AddChild(), AddBefore(), AddAfter(), parse(), Delete(), and the
- * journal-aware XmlNode behavior.  Tests intentionally call XmlDoc::CreateJournal()
- * immediately after XmlDoc construction when journaling is expected.
+ * journal-aware XmlNode behavior. Tests create journals explicitly, then verify
+ * that reopening or attaching a source DOM honors its JRNL declaration without
+ * requiring an application-level OpenJournal() call.
  */
 
 #include "XmlCls.h"
@@ -1012,7 +1013,7 @@ void test_journal_build_jid_map_with_state()
     banner("XmlJrnl::BuildJIDMap with State");
 
     XmlDoc doc(std::string(
-        "<Root JID=\"1111111111111111\" JRNL=\"journal.xml\" STATE_JID=\"3333333333333333\">"
+        "<Root JID=\"1111111111111111\" STATE_JID=\"3333333333333333\">"
         "  <A JID=\"2222222222222222\"/>"
         "</Root>"
     ));
@@ -1095,9 +1096,6 @@ void test_journal_state_validation()
      */
     {
         XmlDoc doc(dom_path);
-        CHECK(!doc.err);
-
-        doc.OpenJournal(jrnl_path);
 
         print_error("Open valid DOM/JRNL", doc.err);
 
@@ -1109,6 +1107,34 @@ void test_journal_state_validation()
         CHECK_EQ(doc.XPath<std::string>("/*/@STATE_JID"), state_jid);
         CHECK_EQ(doc.XPath<std::string>("/*/@JRNL"), std::string(jrnl_path));
         CHECK_EQ(doc.JRNL->XPath<std::string>("(//State)[last()]/@JID"), state_jid);
+
+        /* Compatibility: an older caller may still open explicitly. */
+        XmlJrnl* opened_automatically = doc.JRNL;
+        doc.OpenJournal(jrnl_path);
+        CHECK(doc.JRNL == opened_automatically);
+        CHECK(!doc.err);
+    }
+
+    /*
+     * The C ABI and Python bind through XmlDoc(xmlDocPtr), so exercise that
+     * construction path separately from XmlDoc(filename).
+     */
+    {
+        xmlDocPtr raw = xmlReadFile(dom_path, nullptr, XML_PARSE_NOBLANKS);
+        CHECK(raw != nullptr);
+
+        if (raw) {
+            {
+                XmlDoc attached(raw);
+                CHECK(attached.JRNL != nullptr);
+                CHECK(!attached.err);
+                CHECK(!attached.immutable);
+
+                /* raw is caller-owned; prevent a dangling owner after detach. */
+                raw->_private = nullptr;
+            }
+            xmlFreeDoc(raw);
+        }
     }
 
     /*
@@ -1152,11 +1178,6 @@ void test_journal_state_validation()
      */
     {
         XmlDoc doc(dom_path);
-        CHECK(!doc.err);
-
-        CHECK_EQ(doc.XPath<std::string>("/*/@STATE_JID"), state_jid);
-
-        doc.OpenJournal(jrnl_path);
 
         CHECK(doc.immutable);
         CHECK(doc.err != nullptr);
@@ -1218,8 +1239,6 @@ void test_relative_journal_filename()
         XmlDoc doc(dom_path);
         CHECK(!doc.err);
         CHECK_EQ(doc.XPath<std::string>("/*/@JRNL"), std::string(jrnl_name));
-
-        doc.OpenJournal(jrnl_name);
         CHECK(doc.JRNL != nullptr);
         CHECK(!doc.err);
         CHECK(!doc.immutable);

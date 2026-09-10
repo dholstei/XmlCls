@@ -85,10 +85,15 @@ public:
     XmlDoc(const XmlDoc&) = delete;
     XmlDoc& operator=(const XmlDoc&) = delete;
 
-    XmlDoc(xmlDocPtr doc) noexcept
-        : doc(doc) {
-        doc->_private = this;
-    }
+   /**
+    * @brief Attach the canonical wrapper to an existing libxml2 document.
+    * @param doc Borrowed document pointer; ownership remains with the caller.
+    *
+    * xmlDoc::_private is set to this wrapper. If the document element declares
+    * a JRNL attribute, the referenced journal is opened and validated
+    * automatically.
+    */
+    XmlDoc(xmlDocPtr doc);
 
     XmlDoc(XmlDoc&&) = delete;
     XmlDoc& operator=(XmlDoc&&) = delete;
@@ -97,7 +102,9 @@ public:
     * @brief Construct an XmlDoc from a file on disk.
     * @param filename Path to the XML file.
     *
-    * On failure, @ref err is populated and the document handle is null.
+    * On failure, @ref err is populated and the document handle is null. If the
+    * document element declares a JRNL attribute, the referenced journal is
+    * opened and validated automatically.
     */
     XmlDoc(const char *filename);
 
@@ -105,7 +112,8 @@ public:
     * @brief Construct an XmlDoc from an XML string.
     * @param content Complete XML document text.
     *
-    * On success, xmlDoc::_private is set to this canonical XmlDoc wrapper.
+    * On success, xmlDoc::_private is set to this canonical XmlDoc wrapper. A
+    * journal declared by the document element is opened automatically.
     */
     XmlDoc(const std::string content);
 
@@ -167,6 +175,10 @@ public:
      * @brief Attach an existing journal file to this document.
      * @param filename Journal XML file, resolved relative to the source XML
      *                 file when it is not absolute.
+     *
+     * Construction already invokes this operation when the document element
+     * declares JRNL. Calling it again is harmless and retains the existing
+     * journal attachment.
      */
     void OpenJournal(const char* filename);
 
@@ -191,6 +203,7 @@ public:
 
 private:
 
+    void OpenDeclaredJournal();
     void clear() ;
 };
 
