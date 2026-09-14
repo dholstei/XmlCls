@@ -164,6 +164,8 @@ class XmlCls:
         cls._xlib.XmlDoc_CreateJournal.restype = c_int
         cls._xlib.XmlDoc_Undo.argtypes = [c_void_p]
         cls._xlib.XmlDoc_Undo.restype = c_int
+        cls._xlib.XmlDoc_Redo.argtypes = [c_void_p]
+        cls._xlib.XmlDoc_Redo.restype = c_int
         cls._xlib.XmlDoc_HasJournal.argtypes = [c_void_p]
         cls._xlib.XmlDoc_HasJournal.restype = c_int
         cls._xlib.XmlDoc_MarkRelease.argtypes = [c_void_p, c_char_p]
@@ -201,6 +203,8 @@ class XmlCls:
             self.CAPI_err("Unable to attach the C++ XmlDoc wrapper")
             return
         self._cpp_doc = c_void_p(owner)
+        if self._xlib.XmlCls_LastError():
+            self.CAPI_err("Unable to open declared XML journal")
 
     def CAPI_err(self, data: str = "") -> Error:
         value = self._xlib.XmlCls_LastError()
@@ -252,6 +256,13 @@ class XmlCls:
     def Undo(self) -> bool:
         if not self._cpp_doc or not self._xlib.XmlDoc_Undo(self._cpp_doc):
             self.CAPI_err("Undo")
+            return False
+        self.err = Error()
+        return True
+
+    def Redo(self) -> bool:
+        if not self._cpp_doc or not self._xlib.XmlDoc_Redo(self._cpp_doc):
+            self.CAPI_err("Redo")
             return False
         self.err = Error()
         return True

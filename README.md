@@ -1,23 +1,23 @@
 # XmlCls
 
 ## Overview
-`XmlCls` is a lightweight C++ wrapper around **libxml2** that provides safer, more expressive access to XML documents, nodes, and XPath queries. It is designed for configuration‑driven systems where XML is the primary interchange format and where explicit error propagation is preferred over exceptions.
+`XmlCls` is a lightweight C++ wrapper around **libxml2** that provides safer, more expressive access to XML documents, nodes, and XPath queries. It is designed for configurationâ€‘driven systems where XML is the primary interchange format and where explicit error propagation is preferred over exceptions.
 
 Key characteristics:
 - No exception throwing; all failures are reported through an explicit `Error` structure.
 - Lightweight C++ wrappers around `libxml2` document, node, and XPath objects.
-- Strongly‑typed XPath accessors using templates.
+- Stronglyâ€‘typed XPath accessors using templates.
 - Optional XML mutation journaling through `XmlJrnl`.
-- Minimal policy assumptions, making it suitable for console, GUI, embedded‑host, or service environments.
+- Minimal policy assumptions, making it suitable for console, GUI, embeddedâ€‘host, or service environments.
 
 The design aligns well with systems that require deterministic behavior, auditability, and predictable error handling.
 
 ## Files
-- **XmlCls.h** – Public C++ API declarations: classes, methods, and inline helpers.
-- **XmlCls.cpp** – Parsing, XPath evaluation, mutation, journaling, and undo implementations.
-- **XmlClsLib.cpp** – Minimal language-neutral `extern "C"` facade over selected C++ `XmlNode` operations.
-- **XmlCls.py** – Lightweight Python/`ctypes` interface using libxml2 directly for document parsing and XPath, with selected C++ operations exposed through `XmlClsLib.so`.
-- **XmlClsEdit.py** – Lightweight PyQt6 tree editor built on the Python and C interfaces.
+- **XmlCls.h** â€“ Public C++ API declarations: classes, methods, and inline helpers.
+- **XmlCls.cpp** â€“ Parsing, XPath evaluation, mutation, journaling, and undo implementations.
+- **XmlClsLib.cpp** â€“ Minimal language-neutral `extern "C"` facade over selected C++ `XmlNode` operations.
+- **XmlCls.py** â€“ Lightweight Python/`ctypes` interface using libxml2 directly for document parsing and XPath, with selected C++ operations exposed through `XmlClsLib.so`.
+- **XmlClsEdit.py** â€“ Lightweight PyQt6 tree editor built on the Python and C interfaces.
 
 ## Dependencies
 - **libxml2** (headers and library)
@@ -153,6 +153,7 @@ int XmlDoc_Save(void* owner, const char* filename);
 int XmlDoc_OpenJournal(void* owner, const char* filename);
 int XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML);
 int XmlDoc_Undo(void* owner);
+int XmlDoc_Redo(void* owner);
 int XmlDoc_HasJournal(void* owner);
 int XmlDoc_MarkRelease(void* owner, const char* note);
 int XmlDoc_MarkRestorePoint(void* owner, const char* note, char* jid, size_t capacity);
@@ -164,10 +165,20 @@ xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML);
 xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML);
 xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML);
 xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML);
+int XmlNode_MoveChild(xmlNodePtr node, xmlNodePtr parent);
+int XmlNode_MoveBefore(xmlNodePtr node, xmlNodePtr sibling);
+int XmlNode_MoveAfter(xmlNodePtr node, xmlNodePtr sibling);
 int XmlNode_Delete(xmlNodePtr node);
 
 const char* XmlCls_LastError(void);
 ```
+
+`XmlDoc_Attach()` automatically reads the document element's `JRNL` attribute,
+opens the referenced journal, and validates `STATE_JID`. C and Python consumers
+therefore receive the same journal-aware document as native C++ callers without
+calling `XmlDoc_OpenJournal()` themselves. The explicit function remains
+available for documents whose journal is selected programmatically and is
+idempotent when the declared journal is already open.
 
 The XML serialization interface uses a caller-provided buffer rather than returning an allocation owned by C++:
 
@@ -200,10 +211,10 @@ python3 XmlClsEdit.py PonziCoin.xml
 The menus provide:
 
 - **File**: Open, Save, and Quit.
-- **Edit**: Copy XML, paste as a child, paste before or after the selected node,
-  delete the selected node, and directly edit the selected XML fragment.
+- **Edit**: Copy or Cut XML, paste as a child, paste before or after the selected
+  node, delete the selected node, and directly edit the selected XML fragment.
 - **View**: Collapse All and Expand All.
-- **Journal**: Create, one-level Undo, Mark Release, Mark Restore Point, and a
+- **Journal**: Create, Undo, Redo, Mark Release, Mark Restore Point, and a
   Restore submenu populated from the attached journal.
 
 The window title marks unsaved source-DOM changes with `*`. Structural drag and
@@ -213,6 +224,15 @@ Direct XML editor.
 The editor and native C++ API use the same mutation implementation. Python does
 not independently reproduce Add, Modify, Deletion, Undo, or Restore semantics;
 those operations cross the C ABI into `XmlCls`.
+
+Cut places the selected node's serialized XML on the system clipboard, so it
+can still be pasted into another application. The editor also retains the
+source `xmlNodePtr` and adds a private clipboard MIME marker. While that marker
+remains present, the first Paste, Paste Before, or Paste After moves the live
+node through `MoveChild()`, `MoveBefore()`, or `MoveAfter()` instead of parsing
+a copy. Replacing the clipboard from any application removes the marker and
+cancels the pending move. After a successful move, the XML remains ordinary
+clipboard text and subsequent pastes create copies.
 
 ## Mutation Journaling
 
@@ -235,6 +255,12 @@ example `{0, 2, 1}` represents Release `0.2.1`.
 `OpenJournal()` and `CreateJournal()` are deleted on `XmlJrnl` itself so that a
 journal cannot recursively journal another journal.
 
+`Undo()` reverses the most recent live Change and `Redo()` reapplies reversed
+Changes in their original order. Modify and Add capture the additional forward
+XML needed for Redo when first undone; Delete and Move reuse their recorded
+identity and structural anchors. Recording a new mutation after Undo preserves
+the abandoned history but marks that branch non-redoable.
+
 ### Persistent Journal Association
 
 A source document declares a persistent journal with attributes on its document
@@ -249,6 +275,13 @@ The document element may have any name. `JRNL` contains the journal filename;
 relative names are resolved from the source XML file's directory. Appending
 `.jrnl` to the complete source filename gives predictable names such as
 `PonziCoin.xml.jrnl`, `conf_file.yaml.jrnl`, or `conf_file.json.jrnl`.
+
+Every `XmlDoc` construction path,including wrapping an existing `xmlDocPtr`,
+opens and validates a declared journal automatically. Applications such as
+`XmlClsEdit.py`, `LicenseIssue`, and future Python utilities do not repeat this
+lifecycle logic. A missing or invalid declared journal is reported through the
+normal `err`/`XmlCls_LastError()` channel and inhibits mutation while leaving
+the source DOM readable.
 
 `STATE_JID` identifies the journal state represented by the saved source DOM.
 On save, `XmlCls` stamps a new journal State, writes its JID to the source
@@ -538,6 +571,7 @@ The journal implementation has regression coverage for:
 - Add recording and undo.
 - Reversal state and timestamp behavior.
 - Move-before, move-after, and move-child recording and undo.
+- Named move methods with and without an attached journal.
 - Move no-op detection and move-conflict handling.
 - State stamping and source/journal state validation.
 - Persistent journal metadata and relative journal filenames.

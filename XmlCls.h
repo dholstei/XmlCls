@@ -564,6 +564,21 @@ public:
      */
     void Undo(std::vector<XmlNode> action_nodes);
 
+    /**
+     * @brief Reapply the next redoable Change in the active release.
+     *
+     * Redo proceeds in original journal order. A new mutation after Undo
+     * retains the reversed history but marks that abandoned branch as no
+     * longer redoable.
+     */
+    void Redo();
+
+    /**
+     * @brief Reapply one previously reversed Change.
+     * @param action_node Journal Change node.
+     */
+    void Redo(XmlNode action_node);
+
 
     /**
      * @brief Recalculate the currently active Release branch.
@@ -643,6 +658,9 @@ struct Action {
      */
     virtual void Undo() = 0;
 
+    /** Reapply this action after a successful Undo(). */
+    virtual void Redo() = 0;
+
     /**
      * @brief Create the common journal Change node.
      *
@@ -656,11 +674,22 @@ struct Action {
             return;
         }
 
+        /* A new edit abandons, but does not erase, the previous redo branch. */
+        auto abandoned = jrnl.active_release.XPath<std::vector<XmlNode>>(
+            "./Change/Reversed[@Value='true' and not(@Redoable='false')]"
+        );
+        if (jrnl.active_release.err) {
+            err = jrnl.active_release.err;
+            return;
+        }
+        for (auto& reversed : abandoned)
+            xmlSetProp(reversed.node, BAD_CAST "Redoable", BAD_CAST "false");
+
         std::string xml =
             "\n<Change Type=\"" + type + "\""
             " TimeStamp=\"" + CurrentIsoTimestampUTC() + "\""
             " JID=\"" + jid + "\">"
-            "<Reversed TimeStamp=\"\" Value=\"false\"/>"
+            "<Reversed TimeStamp=\"\" Value=\"false\" Redoable=\"true\"/>"
             "</Change>\n";
 
         action_node = jrnl.active_release.AddChild(xml);
@@ -679,6 +708,9 @@ protected:
      * @brief Mark a successfully undone action as reversed and timestamp it.
      */
     void ReverseStamp();
+
+    /** Mark a successfully redone action as live again. */
+    void ForwardStamp();
 
     /**
      * @brief Report a legitimate journal-history conflict.
@@ -711,6 +743,7 @@ struct ActionModify : public Action {
 
     void Record();
     void Undo() override;
+    void Redo() override;
 };
 
 /**
@@ -729,6 +762,7 @@ struct ActionDelete : public Action {
 
     void Record();
     void Undo() override;
+    void Redo() override;
 };
 
 /**
@@ -747,6 +781,7 @@ struct ActionAdd : public Action {
 
     void Record();
     void Undo() override;
+    void Redo() override;
 };
 
 /**
@@ -769,4 +804,5 @@ struct ActionMove : public Action {
 
     void Record();
     void Undo() override;
+    void Redo() override;
 };

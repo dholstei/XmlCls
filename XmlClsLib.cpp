@@ -172,6 +172,28 @@ int XmlDoc_Undo(void* owner)
 }
 
 /**
+ * @brief Redo the next redoable action in the active release.
+ * @param owner Opaque XmlDoc owner handle with an attached journal.
+ * @return 1 on success, otherwise 0.
+ */
+int XmlDoc_Redo(void* owner)
+{
+    ClearCError();
+    XmlDoc* wrapper = CDoc(owner);
+    if (!wrapper || !wrapper->JRNL) {
+        SetCError(nullptr, "XmlDoc has no open journal");
+        return 0;
+    }
+    wrapper->JRNL->err = nullptr;
+    wrapper->JRNL->Redo();
+    if (wrapper->JRNL->err) {
+        SetCError(wrapper->JRNL->err, "Unable to redo journal action");
+        return 0;
+    }
+    return 1;
+}
+
+/**
  * @brief Report whether a mutable document has an attached journal.
  * @param owner Opaque XmlDoc owner handle.
  * @return 1 when a valid journal is attached and the source is mutable;

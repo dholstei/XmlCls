@@ -1778,6 +1778,81 @@ void test_journal_undo_move_conflict()
     std::remove(path);
 }
 
+void test_journal_redo()
+{
+    banner("Journal Redo Modify/Delete/Add/Move");
+
+    const char* path = "/tmp/xmlcls_test_redo.jrnl.xml";
+    XmlDoc doc(std::string("<Root><A>old</A><B/></Root>"));
+    CHECK(!doc.err);
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    CHECK(!doc.JRNL->err);
+
+    XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    a.parse("<A>new</A>");
+    CHECK(!a.err);
+    doc.JRNL->Undo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("old"));
+    doc.JRNL->Redo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("new"));
+
+    XmlNode b = doc.XPath<std::vector<XmlNode>>("/Root/B")[0];
+    b.Delete();
+    CHECK(!b.err);
+    doc.JRNL->Undo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 1);
+    doc.JRNL->Redo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
+
+    XmlNode root = doc.XPath<std::vector<XmlNode>>("/Root")[0];
+    XmlNode c = root.AddChild("<C/>");
+    CHECK(!c.err);
+    doc.JRNL->Undo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/C)"), 0);
+    doc.JRNL->Redo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/C)"), 1);
+
+    a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
+    c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
+    c.Move(Before{a});
+    CHECK(!c.err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("C"));
+    doc.JRNL->Undo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+    doc.JRNL->Redo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("C"));
+
+    /* A new mutation after Undo abandons the old redo branch. */
+    XmlNode d = root.AddChild("<D/>");
+    CHECK(!d.err);
+    doc.JRNL->Undo();
+    CHECK_EQ(doc.XPath<int>("count(/Root/D)"), 0);
+
+    XmlNode e = root.AddChild("<E/>");
+    CHECK(!e.err);
+    doc.JRNL->Undo();
+    CHECK_EQ(doc.XPath<int>("count(/Root/E)"), 0);
+    doc.JRNL->Redo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/D)"), 0);
+    CHECK_EQ(doc.XPath<int>("count(/Root/E)"), 1);
+
+    doc.JRNL->Redo();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/D)"), 0);
+
+    std::remove(path);
+}
+
 } // namespace
 
 int main()
@@ -1812,6 +1887,7 @@ int main()
     test_xmldoc_xpath_xmlnode();
     test_xmlnode_xpath_xmlnode();
     test_journal_undo_move_conflict();
+    test_journal_redo();
     
     xmlCleanupParser();
 

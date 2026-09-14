@@ -896,6 +896,69 @@ void XmlJrnl::Undo(std::vector<XmlNode> action_nodes) {
         if (err) return;
     }
 }
+
+void XmlJrnl::Redo()
+{
+    MUTABLE_CHECK(source_doc.doc, return);
+    if (!active_release.node) {
+        err = new Error{lvl::ERR, "Cannot redo: journal has no active release", ""};
+        return;
+    }
+
+    auto actions = active_release.XPath<std::vector<XmlNode>>(
+        "./Change[Reversed/@Value='true' and not(Reversed/@Redoable='false')"
+        " and not(following-sibling::Change[Reversed/@Value='false'])][1]"
+    );
+
+    if (active_release.err) {
+        err = active_release.err;
+        return;
+    }
+
+    if (actions.empty()) return;
+    Redo(actions[0]);
+}
+
+void XmlJrnl::Redo(XmlNode action_node)
+{
+    MUTABLE_CHECK(source_doc.doc, return);
+    if (!action_node.node) {
+        err = new Error{lvl::ERR, "Cannot redo: invalid journal action node", ""};
+        return;
+    }
+
+    if (!action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]") )
+        return;
+
+    const std::string type = action_node.XPath<std::string>("@Type");
+
+    if (type == "Modify") {
+        ActionModify action(*this, action_node);
+        action.Redo();
+        if (action.err) err = action.err;
+        return;
+    }
+    if (type == "Deletion") {
+        ActionDelete action(*this, action_node, true);
+        action.Redo();
+        if (action.err) err = action.err;
+        return;
+    }
+    if (type == "Add") {
+        ActionAdd action(*this, action_node, true);
+        action.Redo();
+        if (action.err) err = action.err;
+        return;
+    }
+    if (type == "Move") {
+        ActionMove action(*this, action_node, true);
+        action.Redo();
+        if (action.err) err = action.err;
+        return;
+    }
+
+    err = new Error{lvl::ERR, "Unsupported journal transaction type for Redo", action_node.GetPath()};
+}
 void XmlJrnl::RefreshActiveRelease()
 {
     rel_no.clear();
@@ -1216,6 +1279,21 @@ void Action::ReverseStamp()
 
     const std::string timestamp = CurrentIsoTimestampUTC();
     xmlSetProp(reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str());
+    xmlSetProp(reversed[0].node, BAD_CAST "Redoable", BAD_CAST "true");
+}
+
+void Action::ForwardStamp()
+{
+    auto reversed = action_node.XPath<std::vector<XmlNode>>("./Reversed");
+
+    if (reversed.size() != 1) {
+        err = new Error{lvl::ERR, "Journal action contains invalid Reversed state", action_node.GetPath()};
+        return;
+    }
+
+    xmlSetProp(reversed[0].node, BAD_CAST "Value", BAD_CAST "false");
+    xmlSetProp(reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST "");
+    xmlSetProp(reversed[0].node, BAD_CAST "Redoable", BAD_CAST "true");
 }
 
 void ActionModify::Record()
@@ -1330,9 +1408,18 @@ void ActionModify::Undo()
         return;
     }
 
-    /*
-     * Replace the current physical node with its previous incarnation.
-     */
+    auto redo = action_node.XPath<std::vector<XmlNode>>("./Redo");
+    const std::string redo_xml = base64_encode(XmlNode(current).XML());
+
+    if (redo.empty()) {
+        action_node.AddChild("<Redo Encoding=\"Base64\">" + redo_xml + "</Redo>");
+        if (action_node.err) { xmlFreeNode(restored); err = action_node.err; return; }
+    }
+    else {
+        xmlNodeSetContent(redo[0].node, BAD_CAST redo_xml.c_str());
+    }
+
+    /* Replace the current physical node with its previous incarnation. */
     xmlNodePtr replaced = xmlReplaceNode(current, restored);
 
     if (replaced != current) {
@@ -1349,6 +1436,49 @@ void ActionModify::Undo()
     jrnl.jid_map[jid] = restored;
 
     ReverseStamp();
+}
+
+void ActionModify::Redo()
+{
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+        return;
+
+    const std::string journal_path = action_node.GetPath();
+    auto it = jrnl.jid_map.find(jid);
+    if (it == jrnl.jid_map.end() || !it->second) {
+        Conflict("modified node is no longer available for Redo", action_node);
+        return;
+    }
+
+    const std::string encoded = action_node.XPath<std::string>("./Redo");
+    if (encoded.empty()) {
+        err = new Error{lvl::ERR, "Cannot redo Modify: journal contains no forward node state", journal_path};
+        return;
+    }
+
+    xmlNodePtr current = it->second;
+    xmlNodePtr replacement = XmlNodeFromString(base64_decode(encoded), jrnl.source_doc.doc, err);
+    if (!replacement) {
+        if (err) err->data = journal_path;
+        return;
+    }
+
+    if (XmlNode(replacement).XPath<std::string>("@JID") != jid) {
+        xmlFreeNode(replacement);
+        err = new Error{lvl::ERR, "Cannot redo Modify: saved node JID does not match transaction JID", journal_path};
+        return;
+    }
+
+    xmlNodePtr replaced = xmlReplaceNode(current, replacement);
+    if (replaced != current) {
+        xmlFreeNode(replacement);
+        err = new Error{lvl::ERR, "Cannot redo Modify: xmlReplaceNode failed", journal_path};
+        return;
+    }
+
+    xmlFreeNode(current);
+    jrnl.jid_map[jid] = replacement;
+    ForwardStamp();
 }
 
 ActionDelete::ActionDelete(XmlJrnl& j, XmlNode n) : Action(j), node(n) {
@@ -1530,6 +1660,49 @@ void ActionDelete::Undo()
     ReverseStamp();
 }
 
+void ActionDelete::Redo()
+{
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+        return;
+
+    const std::string journal_path = action_node.GetPath();
+    auto it = jrnl.jid_map.find(jid);
+    if (it == jrnl.jid_map.end() || !it->second) {
+        Conflict("restored node is no longer available for Redo", action_node);
+        return;
+    }
+
+    xmlNodePtr current = it->second;
+    const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
+    auto pit = jrnl.jid_map.find(parent_jid);
+    if (pit == jrnl.jid_map.end() || !pit->second || current->parent != pit->second) {
+        Conflict("restored node is no longer under its recorded parent", action_node);
+        return;
+    }
+
+    const std::string before_jid = action_node.XPath<std::string>("./Before/@JID");
+    const std::string after_jid = action_node.XPath<std::string>("./After/@JID");
+    XmlNode current_node(current);
+    auto before = current_node.XPath<std::vector<XmlNode>>("preceding-sibling::*[1]");
+    auto after = current_node.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
+
+    if ((!before_jid.empty() && (before.empty() || before[0].JID() != before_jid)) ||
+        (before_jid.empty() && !before.empty())) {
+        Conflict("restored node's Before relationship has changed", action_node);
+        return;
+    }
+    if ((!after_jid.empty() && (after.empty() || after[0].JID() != after_jid)) ||
+        (after_jid.empty() && !after.empty())) {
+        Conflict("restored node's After relationship has changed", action_node);
+        return;
+    }
+
+    xmlUnlinkNode(current);
+    xmlFreeNode(current);
+    jrnl.jid_map[jid] = nullptr;
+    ForwardStamp();
+}
+
 ActionAdd::ActionAdd(XmlJrnl& j, XmlNode n) : Action(j), node(n) {
     type = "Add";
     jid = node.JID();
@@ -1606,6 +1779,25 @@ void ActionAdd::Undo()
         return;
     }
 
+    /* Preserve the added XML and its exact slot before removing it. */
+    if (!action_node.XPath<bool>("./Node")) {
+        XmlNode current_node(current);
+        auto before = current_node.XPath<std::vector<XmlNode>>("preceding-sibling::*[1]");
+        auto after = current_node.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
+
+        if (!before.empty()) {
+            action_node.AddChild("<Before JID=\"" + before[0].JID() + "\"/>");
+            if (action_node.err) { err = action_node.err; return; }
+        }
+        if (!after.empty()) {
+            action_node.AddChild("<After JID=\"" + after[0].JID() + "\"/>");
+            if (action_node.err) { err = action_node.err; return; }
+        }
+
+        action_node.AddChild("<Node Encoding=\"Base64\">" + base64_encode(current_node.XML()) + "</Node>");
+        if (action_node.err) { err = action_node.err; return; }
+    }
+
     xmlUnlinkNode(current);
     xmlFreeNode(current);
 
@@ -1615,6 +1807,90 @@ void ActionAdd::Undo()
     jrnl.jid_map[jid] = nullptr;
 
     ReverseStamp();
+}
+
+void ActionAdd::Redo()
+{
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+        return;
+
+    const std::string journal_path = action_node.GetPath();
+    auto existing = jrnl.jid_map.find(jid);
+    if (existing != jrnl.jid_map.end() && existing->second) {
+        Conflict("added node is already present", action_node);
+        return;
+    }
+
+    const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
+    auto pit = jrnl.jid_map.find(parent_jid);
+    if (pit == jrnl.jid_map.end() || !pit->second) {
+        Conflict("Add parent is no longer available", action_node);
+        return;
+    }
+
+    XmlNode parent(pit->second);
+    XmlNode before;
+    const std::string before_jid = action_node.XPath<std::string>("./Before/@JID");
+    if (!before_jid.empty()) {
+        auto bit = jrnl.jid_map.find(before_jid);
+        if (bit == jrnl.jid_map.end() || !bit->second || bit->second->parent != parent.node) {
+            Conflict("Add Before sibling is no longer available", action_node);
+            return;
+        }
+        before = XmlNode(bit->second);
+    }
+
+    XmlNode after;
+    const std::string after_jid = action_node.XPath<std::string>("./After/@JID");
+    if (!after_jid.empty()) {
+        auto ait = jrnl.jid_map.find(after_jid);
+        if (ait == jrnl.jid_map.end() || !ait->second || ait->second->parent != parent.node) {
+            Conflict("Add After sibling is no longer available", action_node);
+            return;
+        }
+        after = XmlNode(ait->second);
+    }
+
+    if (before.node && after.node) {
+        auto next = before.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
+        if (next.size() != 1 || next[0].node != after.node) {
+            Conflict("Add destination slot has changed", action_node);
+            return;
+        }
+    }
+    if (!before.node && !after.node && parent.XPath<bool>("./*")) {
+        Conflict("Add parent no longer has an empty element slot", action_node);
+        return;
+    }
+
+    const std::string encoded = action_node.XPath<std::string>("./Node");
+    if (encoded.empty()) {
+        err = new Error{lvl::ERR, "Cannot redo Add: journal contains no added node", journal_path};
+        return;
+    }
+
+    xmlNodePtr restored = XmlNodeFromString(base64_decode(encoded), jrnl.source_doc.doc, err);
+    if (!restored) {
+        if (err) err->data = journal_path;
+        return;
+    }
+    if (XmlNode(restored).XPath<std::string>("@JID") != jid) {
+        xmlFreeNode(restored);
+        err = new Error{lvl::ERR, "Cannot redo Add: saved node JID does not match transaction JID", journal_path};
+        return;
+    }
+
+    xmlNodePtr inserted = before.node ? xmlAddNextSibling(before.node, restored)
+                        : after.node ? xmlAddPrevSibling(after.node, restored)
+                                     : xmlAddChild(parent.node, restored);
+    if (!inserted) {
+        xmlFreeNode(restored);
+        err = new Error{lvl::ERR, "Cannot redo Add: node could not be restored", journal_path};
+        return;
+    }
+
+    jrnl.jid_map[jid] = inserted;
+    ForwardStamp();
 }
 
 ActionMove::ActionMove(XmlJrnl& j, XmlNode n) : Action(j), node(n)
@@ -1838,4 +2114,90 @@ void ActionMove::Undo()
     }
 
     ReverseStamp();
+}
+
+void ActionMove::Redo()
+{
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+        return;
+
+    const std::string journal_path = action_node.GetPath();
+    auto it = jrnl.jid_map.find(jid);
+    if (it == jrnl.jid_map.end() || !it->second) {
+        Conflict("moved node is no longer available for Redo", action_node);
+        return;
+    }
+
+    XmlNode current(it->second);
+    const std::string from_parent = action_node.XPath<std::string>("./From/Parent/@JID");
+    const std::string from_before = action_node.XPath<std::string>("./From/Before/@JID");
+    const std::string from_after = action_node.XPath<std::string>("./From/After/@JID");
+
+    auto pit = jrnl.jid_map.find(from_parent);
+    if (pit == jrnl.jid_map.end() || !pit->second || current.node->parent != pit->second) {
+        Conflict("moved node is no longer at its recorded original parent", action_node);
+        return;
+    }
+
+    auto before = current.XPath<std::vector<XmlNode>>("preceding-sibling::*[1]");
+    auto after = current.XPath<std::vector<XmlNode>>("following-sibling::*[1]");
+    if ((!from_before.empty() && (before.empty() || before[0].JID() != from_before)) ||
+        (from_before.empty() && !before.empty())) {
+        Conflict("Move original Before relationship has changed", action_node);
+        return;
+    }
+    if ((!from_after.empty() && (after.empty() || after[0].JID() != from_after)) ||
+        (from_after.empty() && !after.empty())) {
+        Conflict("Move original After relationship has changed", action_node);
+        return;
+    }
+
+    const std::string to_parent = action_node.XPath<std::string>("./To/Parent/@JID");
+    const std::string to_before = action_node.XPath<std::string>("./To/Before/@JID");
+    const std::string to_after = action_node.XPath<std::string>("./To/After/@JID");
+    pit = jrnl.jid_map.find(to_parent);
+    if (pit == jrnl.jid_map.end() || !pit->second) {
+        Conflict("Move destination parent is no longer available", action_node);
+        return;
+    }
+
+    xmlNodePtr parent = pit->second;
+    if (!to_before.empty()) {
+        auto bit = jrnl.jid_map.find(to_before);
+        if (bit == jrnl.jid_map.end() || !bit->second || bit->second->parent != parent) {
+            Conflict("Move destination Before sibling is no longer available", action_node);
+            return;
+        }
+        xmlUnlinkNode(current.node);
+        if (!xmlAddNextSibling(bit->second, current.node)) {
+            err = new Error{lvl::ERR, "Cannot redo Move: xmlAddNextSibling failed", journal_path};
+            return;
+        }
+    }
+    else if (!to_after.empty()) {
+        auto ait = jrnl.jid_map.find(to_after);
+        if (ait == jrnl.jid_map.end() || !ait->second || ait->second->parent != parent) {
+            Conflict("Move destination After sibling is no longer available", action_node);
+            return;
+        }
+        xmlUnlinkNode(current.node);
+        if (!xmlAddPrevSibling(ait->second, current.node)) {
+            err = new Error{lvl::ERR, "Cannot redo Move: xmlAddPrevSibling failed", journal_path};
+            return;
+        }
+    }
+    else {
+        XmlNode destination(parent);
+        if (destination.XPath<bool>("./*")) {
+            Conflict("Move destination parent no longer has an empty element slot", action_node);
+            return;
+        }
+        xmlUnlinkNode(current.node);
+        if (!xmlAddChild(parent, current.node)) {
+            err = new Error{lvl::ERR, "Cannot redo Move: xmlAddChild failed", journal_path};
+            return;
+        }
+    }
+
+    ForwardStamp();
 }

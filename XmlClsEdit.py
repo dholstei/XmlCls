@@ -126,6 +126,10 @@ class XmlClsEditor(QMainWindow):
         self.undo_journal_action.setShortcut(QKeySequence.StandardKey.Undo)
         self.undo_journal_action.triggered.connect(self.undo_journal)
 
+        self.redo_journal_action = QAction("&Redo", self)
+        self.redo_journal_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_journal_action.triggered.connect(self.redo_journal)
+
         self.mark_release_action = QAction("Mark &Release...", self)
         self.mark_release_action.triggered.connect(self.mark_release)
 
@@ -156,6 +160,7 @@ class XmlClsEditor(QMainWindow):
         self.journal_menu = self.menuBar().addMenu("&Journal")
         self.journal_menu.addAction(self.create_journal_action)
         self.journal_menu.addAction(self.undo_journal_action)
+        self.journal_menu.addAction(self.redo_journal_action)
         self.journal_menu.addSeparator()
         self.journal_menu.addAction(self.mark_release_action)
         self.journal_menu.addAction(self.mark_restore_point_action)
@@ -208,6 +213,7 @@ class XmlClsEditor(QMainWindow):
         declared = bool(self.dom and self.dom.XPath("boolean(/*/@JRNL)", bool))
         self.create_journal_action.setEnabled(bool(self.dom) and not enabled and not declared)
         self.undo_journal_action.setEnabled(enabled)
+        self.redo_journal_action.setEnabled(enabled)
         self.mark_release_action.setEnabled(enabled)
         self.mark_restore_point_action.setEnabled(enabled)
         self.restore_menu.setEnabled(enabled)
@@ -250,6 +256,14 @@ class XmlClsEditor(QMainWindow):
     def undo_journal(self):
         if not self.dom or not self.dom.Undo():
             self._error("Undo failed", self._dom_error())
+            return
+        self.populate_tree()
+        self._set_dirty(True)
+        self.refresh_journal_menu()
+
+    def redo_journal(self):
+        if not self.dom or not self.dom.Redo():
+            self._error("Redo failed", self._dom_error())
             return
         self.populate_tree()
         self._set_dirty(True)
