@@ -30,12 +30,12 @@ XMLCLS_LIB := XmlClsLib.so
 
 all: libXmlCls.a $(XMLCLS_LIB)
 
-$(XMLCLS_LIB): XmlClsLib.o XmlCls.o
+$(XMLCLS_LIB): XmlClsLib.o XmlCls.o Error.o
 	@if $(CXX) -shared -o $@ $^ -L../cpp-base64  $(LDLIBS);\
 		then echo "--- Build \"$@\": Success ---" | $(LOGGER) ;\
 		else echo "--- Build \"$@\": FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
-XmlClsLib.o: XmlClsLib.cpp XmlCls.h
+XmlClsLib.o: XmlClsLib.cpp XmlCls.h Error.h
 	@if $(CXX) $(CPPFLAGS) $(CXXFLAGS) $(INCLUDES) -c $< -o $@;\
 		then echo "--- Build \"$@\": Success ---" | $(LOGGER) ;\
 		else echo "--- Build \"$@\": FAILURE! ---" | $(LOGGER) ; exit 1; fi

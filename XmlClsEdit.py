@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 
-from XmlCls import XmlCls, XmlNode
+from XmlCls import CError, XmlCls, XmlNode, lvl
 
 
 XML_NODE_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -197,6 +197,8 @@ class XmlClsEditor(QMainWindow):
     def open_file(self, filename: str):
         self.cancel_cut()
         dom = XmlCls(c_char_p(str(filename).encode("utf-8")))
+        if dom.err:
+            ErrorPopup(dom.err, self)
         if not dom.doc:
             self._error("Open failed", getattr(dom.err, "msg", "Unable to parse the XML file"))
             return
@@ -236,12 +238,13 @@ class XmlClsEditor(QMainWindow):
         if not self.dom or not self.filename:
             return
         filename = f"{Path(self.filename).name}.jrnl"
-        if self.dom.CreateJournal(filename):
-            self.populate_tree()
-            self._set_dirty(True)
-            self.refresh_journal_menu()
-        else:
-            self._error("Create journal failed", self._dom_error())
+        self.dom.CreateJournal(filename)
+        if self.dom.err:
+            ErrorPopup(self.dom.err, self)
+            return
+        self.populate_tree()
+        self._set_dirty(True)
+        self.refresh_journal_menu()
 
     def _journal_comment(self, title: str) -> tuple[str, bool]:
         return QInputDialog.getMultiLineText(self, title, "Comment:")
@@ -250,20 +253,36 @@ class XmlClsEditor(QMainWindow):
         note, accepted = self._journal_comment("Mark Release")
         if not accepted:
             return
-        if not self.dom.MarkRelease(note):
-            self._error("Mark release failed", self._dom_error())
+        jrnl = self.dom.JRNL
+        if not jrnl:
+            return
+        jrnl.MarkRelease(note)
+        if jrnl.err:
+            ErrorPopup(jrnl.err, self)
 
     def undo_journal(self):
-        if not self.dom or not self.dom.Undo():
-            self._error("Undo failed", self._dom_error())
+        if not self.dom:
+            return
+        jrnl = self.dom.JRNL
+        if not jrnl:
+            return
+        jrnl.Undo()
+        if jrnl.err:
+            ErrorPopup(jrnl.err, self)
             return
         self.populate_tree()
         self._set_dirty(True)
         self.refresh_journal_menu()
 
     def redo_journal(self):
-        if not self.dom or not self.dom.Redo():
-            self._error("Redo failed", self._dom_error())
+        if not self.dom:
+            return
+        jrnl = self.dom.JRNL
+        if not jrnl:
+            return
+        jrnl.Redo()
+        if jrnl.err:
+            ErrorPopup(jrnl.err, self)
             return
         self.populate_tree()
         self._set_dirty(True)
@@ -273,8 +292,12 @@ class XmlClsEditor(QMainWindow):
         note, accepted = self._journal_comment("Mark Restore Point")
         if not accepted:
             return
-        if not self.dom.MarkRestorePoint(note):
-            self._error("Mark restore point failed", self._dom_error())
+        jrnl = self.dom.JRNL
+        if not jrnl:
+            return
+        jrnl.StampState("RestorePoint", note)
+        if jrnl.err:
+            ErrorPopup(jrnl.err, self)
             return
         self._set_dirty(True)
         self.refresh_journal_menu()
@@ -287,8 +310,9 @@ class XmlClsEditor(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        if not self.dom.Restore(jid):
-            self._error("Restore failed", self._dom_error())
+        self.dom.Restore(jid)
+        if self.dom.err:
+            ErrorPopup(self.dom.err, self)
             return
         self.populate_tree()
         self._set_dirty(True)
@@ -303,8 +327,9 @@ class XmlClsEditor(QMainWindow):
                 return
             self.filename = filename
 
-        if not self.dom.Save(self.filename):
-            self._error("Save failed", self._dom_error())
+        self.dom.Save(self.filename)
+        if self.dom.err:
+            ErrorPopup(self.dom.err, self)
             return
 
         self._set_dirty(False)
@@ -414,14 +439,14 @@ class XmlClsEditor(QMainWindow):
             self._mutate(node, "Delete")
 
     def _mutate(self, node: XmlNode, operation: str, *args):
-        try:
-            result = getattr(node, operation)(*args)
-        except Exception as exc:
-            self._error(f"{operation} failed", str(exc))
+        result = getattr(node, operation)(*args)
+
+        # Match C++ semantics: void methods return None; Add* returns XmlNode.
+        target = result if isinstance(result, XmlNode) else node
+        if target.err:
+            ErrorPopup(target.err, self)
             return
-        if not result:
-            self._error(f"{operation} failed", self._dom_error())
-            return
+
         self.populate_tree()
         self._set_dirty(True)
         self.cancel_cut()
@@ -439,6 +464,34 @@ class XmlClsEditor(QMainWindow):
             event.accept()
         else:
             event.ignore()
+
+
+
+def ErrorPopup(err: CError | None, parent=None):
+    if err is None:
+        return
+
+    title = {
+        lvl.NOERR: "Information",
+        lvl.INFO:  "Information",
+        lvl.WARN:  "Warning",
+        lvl.ERR:   "Error",
+    }.get(err.level, "Error")
+
+    icon = {
+        lvl.NOERR: QMessageBox.Icon.Information,
+        lvl.INFO:  QMessageBox.Icon.Information,
+        lvl.WARN:  QMessageBox.Icon.Warning,
+        lvl.ERR:   QMessageBox.Icon.Critical,
+    }.get(err.level, QMessageBox.Icon.Critical)
+
+    box = QMessageBox(parent)
+    box.setIcon(icon)
+    box.setWindowTitle(title)
+    box.setText(err.msg or title)
+    if err.data:
+        box.setDetailedText(err.data)
+    box.exec()
 
 
 def main() -> int:

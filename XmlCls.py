@@ -3,30 +3,33 @@ from typing import ClassVar
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from xml.etree import ElementTree
 
 
 class lvl(IntEnum):
-    NOERR   = 0
-    DEBUG   = 1
-    INFO    = 2
-    WARNING = 3
-    ERR     = 4
+    NOERR = 0
+    INFO  = 1
+    WARN  = 2
+    ERR   = 3
 
-class XPathType(IntEnum):
-    NODESET = 1
-    BOOLEAN = 2
-    NUMBER  = 3
-    STRING  = 4
 
-@dataclass
-class Error:
-    level: lvl = lvl.NOERR
-    msg: str = ""
+class _CError(Structure):
+    """Raw ctypes representation of the C ABI structure."""
+    _fields_ = [
+        ("level", c_int),
+        ("msg", c_char_p),
+        ("data", c_char_p),
+    ]
+
+
+_CErrorPtr = POINTER(_CError)
+
+
+@dataclass(frozen=True)
+class CError:
+    """Python-owned copy of an XmlCls CError."""
+    level: lvl
+    msg: str
     data: str = ""
-
-    def __bool__(self):
-        return self.level >= lvl.ERR
 
 
 @dataclass(frozen=True)
@@ -35,194 +38,145 @@ class RestorePoint:
     note: str = ""
 
 
-class _xmlError(Structure):
-    _fields_ = [
-        ("domain", c_int),
-        ("code", c_int),
-        ("message", c_char_p),
-        ("level", c_int),
-        ("file", c_char_p),
-        ("line", c_int),
-        ("str1", c_char_p),
-        ("str2", c_char_p),
-        ("str3", c_char_p),
-        ("int1", c_int),
-        ("int2", c_int),
-        ("ctxt", c_void_p),
-        ("node", c_void_p),
-    ]
-
-
-class _xmlNodeSet(Structure):
-    _fields_ = [
-        ("nodeNr", c_int),
-        ("nodeMax", c_int),
-        ("nodeTab", POINTER(c_void_p)),
-    ]
-
-
-class _xmlXPathObject(Structure):
-    _fields_ = [
-        ("type", c_int),
-        ("nodesetval", POINTER(_xmlNodeSet)),
-        ("boolval", c_int),
-        ("floatval", c_double),
-        ("stringval", c_char_p),
-    ]
-
-
 class XmlCls:
+    """Thin Python wrapper around the XmlCls C ABI."""
+
     _lib: ClassVar[CDLL | None] = None
-    _xlib: ClassVar[CDLL | None] = None
 
     def __init__(self, source):
         if XmlCls._lib is None:
-            XmlCls._load_libxml2()
+            XmlCls._load_library()
 
         self.doc = c_void_p()
-        self.ctxt = c_void_p()
-        self.err = Error()
-        self._owns_doc = False
-        self._cpp_doc = c_void_p()
+        self.err = None
 
         if isinstance(source, c_void_p):
-            self._from_doc(source)
-
+            self._attach(source)
         elif isinstance(source, str):
             self._from_xml(source)
-
         elif isinstance(source, c_char_p):
             self._from_file(source)
-
         else:
-            raise TypeError(
-                "XmlCls source must be c_void_p, str XML, or c_char_p filename"
-            )
+            raise TypeError("XmlCls source must be c_void_p, str XML, or c_char_p filename")
 
-        if self.doc:
-            self._attach_doc()
-        
     @classmethod
-    def _load_libxml2(cls):
-        cls._lib = CDLL("libxml2.so")
+    def _load_library(cls):
+        lib = cls._lib = CDLL(str(Path(__file__).resolve().with_name("XmlClsLib.so")))
 
-        # Basic function prototypes for libxml2 functions used in this class
-        cls._lib.xmlReadFile.argtypes = [c_char_p, c_char_p, c_int]
-        cls._lib.xmlReadFile.restype = c_void_p
+        lib.FreeCError.argtypes = [_CErrorPtr]
+        lib.FreeCError.restype = None
 
-        cls._lib.xmlReadMemory.argtypes = [
-            c_char_p, c_int, c_char_p, c_char_p, c_int
+        lib.XmlDoc_Error.argtypes = []
+        lib.XmlDoc_Error.restype = _CErrorPtr
+        lib.XmlNode_Error.argtypes = []
+        lib.XmlNode_Error.restype = _CErrorPtr
+
+        lib.XmlDoc_Attach.argtypes = [c_void_p]
+        lib.XmlDoc_Attach.restype = c_void_p
+        lib.XmlDoc_FromXML.argtypes = [c_char_p]
+        lib.XmlDoc_FromXML.restype = c_void_p
+        lib.XmlDoc_FromFile.argtypes = [c_char_p]
+        lib.XmlDoc_FromFile.restype = c_void_p
+        lib.XmlDoc_Free.argtypes = [c_void_p]
+        lib.XmlDoc_Free.restype = None
+        lib.XmlDoc_Detach.argtypes = [c_void_p]
+        lib.XmlDoc_Detach.restype = None
+
+        lib.XmlDoc_Save.argtypes = [c_void_p, c_char_p]
+        lib.XmlDoc_Save.restype = None
+        lib.XmlDoc_OpenJournal.argtypes = [c_void_p, c_char_p]
+        lib.XmlDoc_OpenJournal.restype = None
+        lib.XmlDoc_CreateJournal.argtypes = [c_void_p, c_char_p, c_char_p]
+        lib.XmlDoc_CreateJournal.restype = None
+        lib.XmlDoc_HasJournal.argtypes = [c_void_p]
+        lib.XmlDoc_HasJournal.restype = c_int
+        lib.XmlDoc_Journal.argtypes = [c_void_p]
+        lib.XmlDoc_Journal.restype = c_void_p
+
+        lib.XmlDoc_XPathString.argtypes = [c_void_p, c_void_p, c_char_p]
+        lib.XmlDoc_XPathString.restype = c_char_p
+        lib.XmlDoc_XPathDouble.argtypes = [c_void_p, c_void_p, c_char_p]
+        lib.XmlDoc_XPathDouble.restype = c_double
+        lib.XmlDoc_XPathInt.argtypes = [c_void_p, c_void_p, c_char_p]
+        lib.XmlDoc_XPathInt.restype = c_int
+        lib.XmlDoc_XPathBool.argtypes = [c_void_p, c_void_p, c_char_p]
+        lib.XmlDoc_XPathBool.restype = c_int
+        lib.XmlDoc_XPathNode.argtypes = [c_void_p, c_void_p, c_char_p]
+        lib.XmlDoc_XPathNode.restype = c_void_p
+        lib.XmlDoc_XPathNodes.argtypes = [
+            c_void_p, c_void_p, c_char_p, POINTER(c_void_p), c_size_t
         ]
-        cls._lib.xmlReadMemory.restype = c_void_p
+        lib.XmlDoc_XPathNodes.restype = c_size_t
 
-        cls._lib.xmlFreeDoc.argtypes = [c_void_p]
-        cls._lib.xmlFreeDoc.restype = None
+        lib.XmlNode_XML.argtypes = [c_void_p]
+        lib.XmlNode_XML.restype = c_char_p
+        lib.XmlNode_Parse.argtypes = [c_void_p, c_char_p]
+        lib.XmlNode_Parse.restype = c_void_p
+        lib.XmlNode_AddChild.argtypes = [c_void_p, c_char_p]
+        lib.XmlNode_AddChild.restype = c_void_p
+        lib.XmlNode_AddBefore.argtypes = [c_void_p, c_char_p]
+        lib.XmlNode_AddBefore.restype = c_void_p
+        lib.XmlNode_AddAfter.argtypes = [c_void_p, c_char_p]
+        lib.XmlNode_AddAfter.restype = c_void_p
+        lib.XmlNode_MoveChild.argtypes = [c_void_p, c_void_p]
+        lib.XmlNode_MoveChild.restype = None
+        lib.XmlNode_MoveBefore.argtypes = [c_void_p, c_void_p]
+        lib.XmlNode_MoveBefore.restype = None
+        lib.XmlNode_MoveAfter.argtypes = [c_void_p, c_void_p]
+        lib.XmlNode_MoveAfter.restype = None
+        lib.XmlNode_Delete.argtypes = [c_void_p]
+        lib.XmlNode_Delete.restype = None
 
-        xmlFreeFunc = CFUNCTYPE(None, c_void_p)
-        cls._xmlFree = xmlFreeFunc.in_dll(cls._lib, "xmlFree")
+        lib.XmlJrnl_Undo.argtypes = [c_void_p]
+        lib.XmlJrnl_Undo.restype = None
+        lib.XmlJrnl_Redo.argtypes = [c_void_p]
+        lib.XmlJrnl_Redo.restype = None
+        lib.XmlJrnl_MarkRelease.argtypes = [c_void_p, c_char_p]
+        lib.XmlJrnl_MarkRelease.restype = None
+        lib.XmlJrnl_StampState.argtypes = [c_void_p, c_char_p, c_char_p]
+        lib.XmlJrnl_StampState.restype = c_char_p
+        lib.XmlJrnl_Restore.argtypes = [c_void_p, c_char_p]
+        lib.XmlJrnl_Restore.restype = None
 
-        # Basic error handling prototypes for libxml2 functions
-        cls._lib.xmlGetLastError.argtypes = []
-        cls._lib.xmlGetLastError.restype = POINTER(_xmlError)
+    @staticmethod
+    def _decode(value):
+        return value.decode("utf-8", errors="replace") if value else ""
 
-        cls._lib.xmlResetLastError.argtypes = []
-        cls._lib.xmlResetLastError.restype = None
+    @classmethod
+    def _consume_error(cls, fn):
+        p = fn()
+        if not p:
+            return None
+        try:
+            e = p.contents
+            try:
+                level = lvl(e.level)
+            except ValueError:
+                level = lvl.ERR
+            return CError(level, cls._decode(e.msg), cls._decode(e.data))
+        finally:
+            cls._lib.FreeCError(p)
 
-        # Basic XPath handling prototypes for libxml2 functions
-        cls._lib.xmlXPathNewContext.argtypes = [c_void_p]
-        cls._lib.xmlXPathNewContext.restype = c_void_p
-
-        cls._lib.xmlXPathFreeContext.argtypes = [c_void_p]
-        cls._lib.xmlXPathFreeContext.restype = None
-
-        cls._lib.xmlXPathEvalExpression.argtypes = [c_char_p, c_void_p]
-        cls._lib.xmlXPathEvalExpression.restype = POINTER(_xmlXPathObject)
-
-        cls._lib.xmlXPathFreeObject.argtypes = [POINTER(_xmlXPathObject)]
-        cls._lib.xmlXPathFreeObject.restype = None
-
-        cls._lib.xmlXPathNodeEval.argtypes = [c_void_p, c_char_p, c_void_p]
-        cls._lib.xmlXPathNodeEval.restype = POINTER(_xmlXPathObject)
-
-        cls._lib.xmlNodeGetContent.argtypes = [c_void_p]
-        cls._lib.xmlNodeGetContent.restype = c_void_p
-
-        cls._xlib = CDLL(str(Path(__file__).resolve().with_name("XmlClsLib.so")))
-
-        cls._xlib.XmlNode_XML.argtypes = [c_void_p, c_char_p, c_size_t]
-        cls._xlib.XmlNode_XML.restype = c_size_t
-
-        cls._xlib.XmlDoc_Attach.argtypes = [c_void_p]
-        cls._xlib.XmlDoc_Attach.restype = c_void_p
-        cls._xlib.XmlDoc_Detach.argtypes = [c_void_p]
-        cls._xlib.XmlDoc_Detach.restype = None
-        cls._xlib.XmlDoc_Save.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlDoc_Save.restype = c_int
-        cls._xlib.XmlDoc_OpenJournal.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlDoc_OpenJournal.restype = c_int
-        cls._xlib.XmlDoc_CreateJournal.argtypes = [c_void_p, c_char_p, c_char_p]
-        cls._xlib.XmlDoc_CreateJournal.restype = c_int
-        cls._xlib.XmlDoc_Undo.argtypes = [c_void_p]
-        cls._xlib.XmlDoc_Undo.restype = c_int
-        cls._xlib.XmlDoc_Redo.argtypes = [c_void_p]
-        cls._xlib.XmlDoc_Redo.restype = c_int
-        cls._xlib.XmlDoc_HasJournal.argtypes = [c_void_p]
-        cls._xlib.XmlDoc_HasJournal.restype = c_int
-        cls._xlib.XmlDoc_MarkRelease.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlDoc_MarkRelease.restype = c_int
-        cls._xlib.XmlDoc_MarkRestorePoint.argtypes = [c_void_p, c_char_p, c_char_p, c_size_t]
-        cls._xlib.XmlDoc_MarkRestorePoint.restype = c_int
-        cls._xlib.XmlDoc_RestorePoints.argtypes = [c_void_p, c_char_p, c_size_t]
-        cls._xlib.XmlDoc_RestorePoints.restype = c_size_t
-        cls._xlib.XmlDoc_Restore.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlDoc_Restore.restype = c_int
-
-        cls._xlib.XmlNode_Parse.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlNode_Parse.restype = c_void_p
-        cls._xlib.XmlNode_AddChild.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlNode_AddChild.restype = c_void_p
-        cls._xlib.XmlNode_AddBefore.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlNode_AddBefore.restype = c_void_p
-        cls._xlib.XmlNode_AddAfter.argtypes = [c_void_p, c_char_p]
-        cls._xlib.XmlNode_AddAfter.restype = c_void_p
-        cls._xlib.XmlNode_MoveChild.argtypes = [c_void_p, c_void_p]
-        cls._xlib.XmlNode_MoveChild.restype = c_int
-        cls._xlib.XmlNode_MoveBefore.argtypes = [c_void_p, c_void_p]
-        cls._xlib.XmlNode_MoveBefore.restype = c_int
-        cls._xlib.XmlNode_MoveAfter.argtypes = [c_void_p, c_void_p]
-        cls._xlib.XmlNode_MoveAfter.restype = c_int
-        cls._xlib.XmlNode_Delete.argtypes = [c_void_p]
-        cls._xlib.XmlNode_Delete.restype = c_int
-
-        cls._xlib.XmlCls_LastError.argtypes = []
-        cls._xlib.XmlCls_LastError.restype = c_char_p
-
-    def _attach_doc(self):
-        owner = self._xlib.XmlDoc_Attach(self.doc)
-        if not owner:
-            self.CAPI_err("Unable to attach the C++ XmlDoc wrapper")
-            return
-        self._cpp_doc = c_void_p(owner)
-        if self._xlib.XmlCls_LastError():
-            self.CAPI_err("Unable to open declared XML journal")
-
-    def CAPI_err(self, data: str = "") -> Error:
-        value = self._xlib.XmlCls_LastError()
-        msg = value.decode("utf-8", errors="replace") if value else "Unknown XmlCls error"
-        self.err = Error(lvl.ERR, msg, data)
+    def _take_error(self):
+        self.err = self._consume_error(self._lib.XmlDoc_Error)
         return self.err
 
+    def _attach(self, doc):
+        self.doc = c_void_p(self._lib.XmlDoc_Attach(doc))
+        self._take_error()
+
+    def _from_xml(self, XML):
+        self.doc = c_void_p(self._lib.XmlDoc_FromXML(XML.encode("utf-8")))
+        self._take_error()
+
+    def _from_file(self, filename):
+        self.doc = c_void_p(self._lib.XmlDoc_FromFile(filename))
+        self._take_error()
+
     def close(self):
-        if self.ctxt:
-            self._lib.xmlXPathFreeContext(self.ctxt)
-            self.ctxt = c_void_p()
-        if self._cpp_doc:
-            self._xlib.XmlDoc_Detach(self._cpp_doc)
-            self._cpp_doc = c_void_p()
-        if self._owns_doc and self.doc:
-            self._lib.xmlFreeDoc(self.doc)
-        self.doc = c_void_p()
-        self._owns_doc = False
+        if self.doc and self.doc.value:
+            self._lib.XmlDoc_Free(self.doc)
+            self.doc = c_void_p()
 
     def __del__(self):
         try:
@@ -230,349 +184,220 @@ class XmlCls:
         except Exception:
             pass
 
-    def Save(self, filename: str) -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_Save(self._cpp_doc, filename.encode("utf-8")):
-            self.CAPI_err(filename)
-            return False
-        self.err = Error()
-        return True
+    @property
+    def JRNL(self):
+        if not self.doc or not self.doc.value:
+            return None
+        p = self._lib.XmlDoc_Journal(self.doc)
+        self._take_error()
+        return XmlJrnl(self, c_void_p(p)) if p else None
 
-    def OpenJournal(self, filename: str) -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_OpenJournal(self._cpp_doc, filename.encode("utf-8")):
-            self.CAPI_err(filename)
-            return False
-        self.err = Error()
-        return True
+    def Save(self, filename):
+        self._lib.XmlDoc_Save(self.doc, filename.encode("utf-8"))
+        self._take_error()
 
-    def CreateJournal(self, filename: str, XML: str = "") -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_CreateJournal(
-            self._cpp_doc, filename.encode("utf-8"), XML.encode("utf-8")
-        ):
-            self.CAPI_err(filename)
-            return False
-        self.err = Error()
-        return True
+    def OpenJournal(self, filename):
+        self._lib.XmlDoc_OpenJournal(self.doc, filename.encode("utf-8"))
+        self._take_error()
 
-    def Undo(self) -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_Undo(self._cpp_doc):
-            self.CAPI_err("Undo")
-            return False
-        self.err = Error()
-        return True
+    def CreateJournal(self, filename, XML=""):
+        self._lib.XmlDoc_CreateJournal(
+            self.doc, filename.encode("utf-8"), XML.encode("utf-8"))
+        self._take_error()
 
-    def Redo(self) -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_Redo(self._cpp_doc):
-            self.CAPI_err("Redo")
-            return False
-        self.err = Error()
-        return True
+    def HasJournal(self):
+        ans = bool(self._lib.XmlDoc_HasJournal(self.doc))
+        self._take_error()
+        return ans
 
-    def HasJournal(self) -> bool:
-        return bool(self._cpp_doc and self._xlib.XmlDoc_HasJournal(self._cpp_doc))
-
-    def MarkRelease(self, note: str = "") -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_MarkRelease(self._cpp_doc, note.encode("utf-8")):
-            self.CAPI_err(note)
-            return False
-        self.err = Error()
-        return True
-
-    def MarkRestorePoint(self, note: str = "") -> str:
-        jid = create_string_buffer(17)
-        if not self._cpp_doc or not self._xlib.XmlDoc_MarkRestorePoint(
-            self._cpp_doc, note.encode("utf-8"), jid, len(jid)
-        ):
-            self.CAPI_err(note)
-            return ""
-        self.err = Error()
-        return jid.value.decode("ascii")
-
-    def RestorePoints(self) -> list[RestorePoint]:
-        size = self._xlib.XmlDoc_RestorePoints(self._cpp_doc, None, 0) if self._cpp_doc else 0
-        if not size:
-            self.CAPI_err("RestorePoints")
-            return []
-        buf = create_string_buffer(size)
-        if self._xlib.XmlDoc_RestorePoints(self._cpp_doc, buf, size) != size:
-            self.CAPI_err("RestorePoints")
-            return []
-        root = ElementTree.fromstring(buf.value.decode("utf-8"))
-        self.err = Error()
-        return [RestorePoint(state.get("JID", ""), state.get("Note", "")) for state in root]
-
-    def Restore(self, jid: str) -> bool:
-        if not self._cpp_doc or not self._xlib.XmlDoc_Restore(self._cpp_doc, jid.encode("ascii")):
-            self.CAPI_err(jid)
-            return False
-        self.err = Error()
-        return True
-
-    def API_err(self, data: str = "") -> Error:
-        p = self._lib.xmlGetLastError()
-
-        if not p:
-            return Error(lvl.ERR, "Unknown libxml2 error", data)
-
-        e = p.contents
-        msg = e.message.decode("utf-8", errors="replace").strip() if e.message else "Unknown libxml2 error"
-        self.err = Error(lvl.ERR, msg, data)
-        return self.err
-
-    def _from_doc(self, doc: c_void_p):
-        if not doc or not doc.value:
-            raise ValueError("Invalid NULL xmlDocPtr")
-
-        self.doc = doc
-        self._owns_doc = False
-
-    def _from_xml(self, XML: str):
-        data = XML.encode("utf-8")
-
-        doc = self._lib.xmlReadMemory( data, len(data), b"memory.xml", None, 0 )
-
-        if not doc:
-            self.API_err("Unable to parse XML string")
-            return
-
-        self.doc = c_void_p(doc)
-        self._owns_doc = True
-
-    def _from_file(self, filename: c_char_p):
-        doc = self._lib.xmlReadFile( filename, None, 0 )
-
-        if not doc:
-            name = filename.value.decode() if filename.value else ""
-            self.err = self.API_err(name)
-            return
-
-        self.doc = c_void_p(doc)
-        self._owns_doc = True
-
-    def _XPathContext(self) -> c_void_p:
-        if not self.ctxt:
-            self.ctxt = c_void_p(self._lib.xmlXPathNewContext(self.doc))
-
-            if not self.ctxt:
-                self.API_err("Unable to create XPath context")
-
-        return self.ctxt
-
-    def XPath(self, query: str, type=None, node=None):
-        ctxt = self._XPathContext()
-
+    def _XPath(self, doc, query, type=None, node=None):
         if type is None:
             type = XmlNode
 
-        if node is None:
-            result = self._lib.xmlXPathEvalExpression(query.encode("utf-8"), ctxt)
-        else:
-            node_ptr = node.node if isinstance(node, XmlNode) else node
-            result = self._lib.xmlXPathNodeEval(node_ptr, query.encode("utf-8"), ctxt)
+        context = node.node if isinstance(node, XmlNode) else node
+        context = context if context else c_void_p()
+        q = query.encode("utf-8")
 
-        if not result:
-            self.API_err(f'XPath evaluation failed: "{query}"')
-            return self._XPathDefault(type)
+        if type is XmlNode:
+            ans = self._lib.XmlDoc_XPathNode(doc, context, q)
+            self._take_error()
+            return XmlNode(self, c_void_p(ans)) if ans else XmlNode(self, c_void_p())
 
-        try:
-            obj = result.contents
+        if type == list[XmlNode]:
+            count = self._lib.XmlDoc_XPathNodes(doc, context, q, None, 0)
+            self._take_error()
+            if self.err or not count:
+                return []
 
-            if type is XmlNode:
-                if obj.type != XPathType.NODESET:
-                    self.err = Error(lvl.ERR, "XPath result is not a node set", query)
-                    return None
+            nodes = (c_void_p * count)()
+            count = self._lib.XmlDoc_XPathNodes(doc, context, q, nodes, count)
+            self._take_error()
+            return [XmlNode(self, nodes[i]) for i in range(count)]
 
-                nodes = obj.nodesetval
+        if type is str:
+            ans = self._lib.XmlDoc_XPathString(doc, context, q)
+            self._take_error()
+            return self._decode(ans)
 
-                if not nodes or nodes.contents.nodeNr == 0:
-                    return None
+        if type is float:
+            ans = self._lib.XmlDoc_XPathDouble(doc, context, q)
+            self._take_error()
+            return ans
 
-                if nodes.contents.nodeNr > 1:
-                    self.err = Error(lvl.ERR, "XPath result is ambiguous, expected one node", query)
-                    return None
+        if type is int:
+            ans = self._lib.XmlDoc_XPathInt(doc, context, q)
+            self._take_error()
+            return ans
 
-                return XmlNode(self, c_void_p(nodes.contents.nodeTab[0]))
+        if type is bool:
+            ans = self._lib.XmlDoc_XPathBool(doc, context, q)
+            self._take_error()
+            return bool(ans)
 
-            if type == list[XmlNode]:
-                if obj.type != XPathType.NODESET:
-                    self.err = Error(lvl.ERR, "XPath result is not a node set", query)
-                    return []
+        raise TypeError(f"Unsupported XPath return type: {type}")
 
-                nodes = obj.nodesetval
+    def XPath(self, query, type=None, node=None):
+        return self._XPath(self.doc, query, type, node)
 
-                if not nodes or nodes.contents.nodeNr == 0:
-                    return []
+    def RestorePoints(self):
+        jrnl = self.JRNL
+        if not jrnl:
+            return []
 
-                return [
-                    XmlNode(self, c_void_p(nodes.contents.nodeTab[i]))
-                    for i in range(nodes.contents.nodeNr)
-                ]
+        states = jrnl.XPath("//State[@Type='RestorePoint']", list[XmlNode])
+        if jrnl.err:
+            self.err = jrnl.err
+            return []
 
-            if type is str:
-                if obj.type == XPathType.STRING:
-                    return obj.stringval.decode("utf-8") if obj.stringval else ""
+        points = []
+        for state in states:
+            jid = state.XPath("@JID", str)
+            if state.err:
+                self.err = state.err
+                return []
 
-                if obj.type == XPathType.NODESET:
-                    nodes = obj.nodesetval
+            note = state.XPath("@Note", str)
+            if state.err:
+                self.err = state.err
+                return []
 
-                    if not nodes or nodes.contents.nodeNr != 1:
-                        self.err = Error(lvl.ERR, "XPath result is not a single node", query)
-                        return ""
+            points.append(RestorePoint(jid, note))
 
-                    return self._NodeString(nodes.contents.nodeTab[0])
+        return points
 
-                self.err = Error(lvl.ERR, "XPath result cannot be converted to str", query)
-                return ""
+    def Restore(self, jid):
+        jrnl = self.JRNL
+        if not jrnl:
+            return
 
-            if type is float:
-                if obj.type == XPathType.NUMBER:
-                    return float(obj.floatval)
+        jrnl.Restore(jid)
+        self.err = jrnl.err
 
-                if obj.type == XPathType.NODESET:
-                    nodes = obj.nodesetval
-
-                    if not nodes or nodes.contents.nodeNr != 1:
-                        self.err = Error(lvl.ERR, "XPath result is not a single node", query)
-                        return 0.0
-
-                    try:
-                        return float(self._NodeString(nodes.contents.nodeTab[0]))
-                    except ValueError:
-                        self.err = Error(lvl.ERR, "XPath node value cannot be converted to float", query)
-                        return 0.0
-
-                self.err = Error(lvl.ERR, "XPath result cannot be converted to float", query)
-                return 0.0
-
-            if type is int:
-                if obj.type == XPathType.NUMBER:
-                    return int(obj.floatval)
-
-                if obj.type == XPathType.NODESET:
-                    nodes = obj.nodesetval
-
-                    if not nodes or nodes.contents.nodeNr != 1:
-                        self.err = Error(lvl.ERR, "XPath result is not a single node", query)
-                        return 0
-
-                    try:
-                        return int(float(self._NodeString(nodes.contents.nodeTab[0])))
-                    except ValueError:
-                        self.err = Error(lvl.ERR, "XPath node value cannot be converted to int", query)
-                        return 0
-
-                self.err = Error(lvl.ERR, "XPath result cannot be converted to int", query)
-                return 0
-
-            if type is bool:
-                if obj.type == XPathType.BOOLEAN:
-                    return bool(obj.boolval)
-
-                if obj.type == XPathType.NODESET:
-                    nodes = obj.nodesetval
-                    return bool(nodes and nodes.contents.nodeNr > 0)
-
-                self.err = Error(lvl.ERR, "XPath result cannot be converted to bool", query)
-                return False
-
-            raise TypeError(f"Unsupported XPath return type: {type}")
-
-        finally:
-            self._lib.xmlXPathFreeObject(result)
-
-    def _NodeString(self, node: c_void_p) -> str:
-        if not node:
-            return ""
-
-        value = self._lib.xmlNodeGetContent(node)
-        if not value:
-            return ""
-
-        try:
-            return cast(value, c_char_p).value.decode("utf-8")
-        finally:
-            self._xmlFree(value)
 
 
 class XmlNode:
-    def __init__(self, owner: "XmlCls", node: c_void_p):
+    def __init__(self, owner, node):
         self.owner = owner
-        self.node: c_void_p = c_void_p(node.value if isinstance(node, c_void_p) else node)
+        self.node = c_void_p(node.value if isinstance(node, c_void_p) else node)
+        self.err = None
 
-    @property
-    def _lib(self):
-        return self.owner._lib
+    def _take_error(self):
+        self.err = self.owner._consume_error(self.owner._lib.XmlNode_Error)
+        return self.err
 
-    @property
-    def err(self):
-        return self.owner.err
+    def XPath(self, query, type=None):
+        ans = self.owner.XPath(query, XmlNode if type is None else type, node=self)
 
+        # XPath is implemented by XmlDoc::XPath<T>(), so mirror the C++ node
+        # wrapper's transfer of owner.err to this XmlNode.
+        self.err = self.owner.err
+        self.owner.err = None
+        return ans
 
-    def XPath(self, query: str, type=None):
-        if type is None:
-            type = XmlNode
+    def XML(self):
+        ans = self.owner._lib.XmlNode_XML(self.node)
+        self._take_error()
+        return self.owner._decode(ans)
 
-        return self.owner.XPath(query, type, node=self)
-    
-    def XML(self) -> str:
-        size = self.owner._xlib.XmlNode_XML(self.node, None, 0)
-        if not size:
-            return ""
+    def parse(self, XML):
+        ans = self.owner._lib.XmlNode_Parse(self.node, XML.encode("utf-8"))
+        self._take_error()
+        if ans:
+            self.node = c_void_p(ans)
 
-        buf = create_string_buffer(size)
+    def _Add(self, fn, XML):
+        ans = XmlNode(self.owner, c_void_p(fn(self.node, XML.encode("utf-8"))))
+        ans.err = self.owner._consume_error(self.owner._lib.XmlNode_Error)
+        return ans
 
-        if self.owner._xlib.XmlNode_XML(self.node, buf, size) != size:
-            return ""
+    def AddChild(self, XML):
+        return self._Add(self.owner._lib.XmlNode_AddChild, XML)
 
-        return buf.value.decode("utf-8")
+    def AddBefore(self, XML):
+        return self._Add(self.owner._lib.XmlNode_AddBefore, XML)
 
-    def parse(self, XML: str) -> bool:
-        node = self.owner._xlib.XmlNode_Parse(self.node, XML.encode("utf-8"))
-        if not node:
-            self.owner.CAPI_err(XML[:200])
-            return False
-        self.node = c_void_p(node)
-        self.owner.err = Error()
-        return True
+    def AddAfter(self, XML):
+        return self._Add(self.owner._lib.XmlNode_AddAfter, XML)
 
-    def _Add(self, function, XML: str):
-        node = function(self.node, XML.encode("utf-8"))
-        if not node:
-            self.owner.CAPI_err(XML[:200])
-            return None
-        self.owner.err = Error()
-        return XmlNode(self.owner, c_void_p(node))
-
-    def AddChild(self, XML: str):
-        return self._Add(self.owner._xlib.XmlNode_AddChild, XML)
-
-    def AddBefore(self, XML: str):
-        return self._Add(self.owner._xlib.XmlNode_AddBefore, XML)
-
-    def AddAfter(self, XML: str):
-        return self._Add(self.owner._xlib.XmlNode_AddAfter, XML)
-
-    def _Move(self, function, destination: "XmlNode") -> bool:
+    def _Move(self, fn, destination):
         if not isinstance(destination, XmlNode):
             raise TypeError("destination must be an XmlNode")
-        if not function(self.node, destination.node):
-            self.owner.CAPI_err("Move")
-            return False
-        self.owner.err = Error()
-        return True
+        fn(self.node, destination.node)
+        self._take_error()
 
-    def MoveChild(self, parent: "XmlNode") -> bool:
-        return self._Move(self.owner._xlib.XmlNode_MoveChild, parent)
+    def MoveChild(self, parent):
+        self._Move(self.owner._lib.XmlNode_MoveChild, parent)
 
-    def MoveBefore(self, sibling: "XmlNode") -> bool:
-        return self._Move(self.owner._xlib.XmlNode_MoveBefore, sibling)
+    def MoveBefore(self, sibling):
+        self._Move(self.owner._lib.XmlNode_MoveBefore, sibling)
 
-    def MoveAfter(self, sibling: "XmlNode") -> bool:
-        return self._Move(self.owner._xlib.XmlNode_MoveAfter, sibling)
+    def MoveAfter(self, sibling):
+        self._Move(self.owner._lib.XmlNode_MoveAfter, sibling)
 
-    def Delete(self) -> bool:
-        if not self.owner._xlib.XmlNode_Delete(self.node):
-            self.owner.CAPI_err("Delete")
-            return False
-        self.node = c_void_p()
-        self.owner.err = Error()
-        return True
+    def Delete(self):
+        self.owner._lib.XmlNode_Delete(self.node)
+        self._take_error()
+        if not self.err:
+            self.node = c_void_p()
+
+
+class XmlJrnl:
+    def __init__(self, owner, journal):
+        self.owner = owner
+        self.journal = c_void_p(
+            journal.value if isinstance(journal, c_void_p) else journal)
+        self.err = None
+
+    def _take_error(self):
+        # XmlJrnl derives from XmlDoc and the C adapter deliberately uses the
+        # document error channel for journal operations.
+        self.err = self.owner._consume_error(self.owner._lib.XmlDoc_Error)
+        return self.err
+
+    def XPath(self, query, type=None):
+        ans = self.owner._XPath(self.journal, query, type)
+        self.err = self.owner.err
+        self.owner.err = None
+        return ans
+
+    def Undo(self):
+        self.owner._lib.XmlJrnl_Undo(self.journal)
+        self._take_error()
+
+    def Redo(self):
+        self.owner._lib.XmlJrnl_Redo(self.journal)
+        self._take_error()
+
+    def MarkRelease(self, note=""):
+        self.owner._lib.XmlJrnl_MarkRelease(self.journal, note.encode("utf-8"))
+        self._take_error()
+
+    def StampState(self, type, note=""):
+        ans = self.owner._lib.XmlJrnl_StampState(
+            self.journal, type.encode("utf-8"), note.encode("utf-8"))
+        self._take_error()
+        return self.owner._decode(ans)
+
+    def Restore(self, jid):
+        self.owner._lib.XmlJrnl_Restore(self.journal, jid.encode("ascii"))
+        self._take_error()

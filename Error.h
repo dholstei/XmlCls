@@ -2,6 +2,7 @@
 #include <functional>
 #include <cstdio>
 #include <string>
+#include <cstring>
 
 enum lvl {NOERR, INFO, WARN, ERR};
 
@@ -41,3 +42,27 @@ inline std::string MsgErr(const Error* e) {
 }
 
 #define MSG_ERR(e)  do { g_handle_err_handler(e); } while(0)
+
+extern "C" {
+
+enum ErrLvl {
+  NOERR_ = NOERR,
+  INFO_ = INFO,
+  WARN_ = WARN,
+  ERR_ = ERR
+};
+
+typedef struct CError {
+    ErrLvl level;
+    char* msg;
+    char* data;
+
+} *CErrorPtr;
+
+CErrorPtr CreateCError(ErrLvl level, const char* msg, const char* data);
+
+void FreeCError(CErrorPtr e);
+
+CErrorPtr ConvertToCError(const Error* e);
+
+}
