@@ -5,7 +5,7 @@ import sys
 from ctypes import c_char_p, c_void_p
 from pathlib import Path
 
-from PyQt6.QtCore import QByteArray, QMimeData, Qt
+from PyQt6.QtCore import QByteArray, QFileSystemWatcher, QMimeData, QTimer, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
@@ -57,6 +57,10 @@ class XmlClsEditor(QMainWindow):
         self.filename: str | None = None
         self.dirty = False
         self.cut_node: c_void_p | None = None
+        self.file_mtime_ns: int | None = None
+
+        self.file_watcher = QFileSystemWatcher(self)
+        self.file_watcher.fileChanged.connect(self._file_changed)
 
         QApplication.clipboard().dataChanged.connect(self.clipboard_changed)
 
@@ -249,6 +253,7 @@ class XmlClsEditor(QMainWindow):
         self._set_dirty(False)
         self.populate_tree()
         self.refresh_journal_menu()
+        self._watch_file()
 
     def refresh_journal_menu(self):
         enabled = bool(self.dom and self.dom.HasJournal())
@@ -373,6 +378,102 @@ class XmlClsEditor(QMainWindow):
             return
 
         self._set_dirty(False)
+        self._watch_file()
+
+    def _watch_file(self):
+        """Watch the current source file and remember the disk version we loaded/saved."""
+        watched = self.file_watcher.files()
+        if watched:
+            self.file_watcher.removePaths(watched)
+
+        self.file_mtime_ns = None
+        if not self.filename:
+            return
+
+        path = Path(self.filename)
+        try:
+            self.file_mtime_ns = path.stat().st_mtime_ns
+        except FileNotFoundError:
+            return
+
+        self.file_watcher.addPath(str(path))
+
+    def _selected_path(self) -> str:
+        node = self.current_node()
+        if not node:
+            return ""
+
+        path = node.GetPath()
+        if node.err:
+            return ""
+        return path
+
+    def _restore_selection(self, path: str):
+        if not path or not self.dom:
+            return
+
+        node = self.dom.XPath(path, XmlNode)
+        if self.dom.err or not node or not node.node:
+            return
+
+        item = self.node_items.get(node.node.value)
+        if not item:
+            return
+
+        parent = item.parent()
+        while parent:
+            parent.setExpanded(True)
+            parent = parent.parent()
+
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
+
+    def _reload_external_change(self):
+        """Re-open the source through XmlCls so journal association is revalidated."""
+        if not self.filename:
+            return
+
+        selection = self._selected_path()
+        filename = self.filename
+        self.open_file(filename)
+        self._restore_selection(selection)
+
+    def _file_changed(self, filename: str):
+        path = Path(filename)
+
+        # Editors and generators may replace a file atomically.  QFileSystemWatcher
+        # then drops the file watch, so defer briefly until the replacement exists.
+        try:
+            mtime_ns = path.stat().st_mtime_ns
+        except FileNotFoundError:
+            QTimer.singleShot(100, lambda: self._file_changed(filename))
+            return
+
+        # A queued notification from our own Save() sees the version already
+        # recorded by _watch_file() and is ignored.
+        if mtime_ns == self.file_mtime_ns:
+            if filename not in self.file_watcher.files():
+                self.file_watcher.addPath(filename)
+            return
+
+        if self.dirty:
+            answer = QMessageBox.question(
+                self,
+                "File Changed",
+                f"{path.name} was modified externally.\n\n"
+                "Reloading will discard unsaved editor changes. Reload?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                # We have now acknowledged this disk version.  A later external
+                # change will produce a different mtime and ask again.
+                self.file_mtime_ns = mtime_ns
+                if filename not in self.file_watcher.files():
+                    self.file_watcher.addPath(filename)
+                return
+
+        self._reload_external_change()
 
     def populate_tree(self):
         self.tree.clear()

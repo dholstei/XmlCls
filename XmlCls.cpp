@@ -1,6 +1,10 @@
 #include "XmlCls.h"
 #include "base64.h"
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 /**
  * @brief Convert the current libxml2 global/thread error into XmlCls error state.
  *
@@ -48,6 +52,86 @@ std::string JournalPath(const XmlDoc& source, const char* filename)
     std::size_t slash = source_path.find_last_of('/');
     return slash == std::string::npos ? path : source_path.substr(0, slash + 1) + path;
 }
+
+class FileLock
+{
+public:
+    Error* err = nullptr;
+
+    explicit FileLock(const char* filename)
+    {
+        lockfile = std::string(filename) + ".lock";
+        fd = open(lockfile.c_str(), O_CREAT | O_RDWR, 0666);
+        if (fd < 0) {
+            err = new Error{lvl::ERR, "Cannot open DOM lock file", lockfile};
+            return;
+        }
+
+        if (flock(fd, LOCK_EX) != 0) {
+            err = new Error{lvl::ERR, "Cannot lock DOM", lockfile};
+            close(fd);
+            fd = -1;
+        }
+    }
+
+    ~FileLock()
+    {
+        if (fd >= 0) {
+            flock(fd, LOCK_UN);
+            close(fd);
+        }
+    }
+
+private:
+    int fd = -1;
+    std::string lockfile;
+};
+
+static std::string StateJID(xmlDocPtr doc)
+{
+    if (!doc) return {};
+
+    xmlNodePtr root = xmlDocGetRootElement(doc);
+    if (!root) return {};
+
+    xmlChar* value = xmlGetProp(root, BAD_CAST "STATE_JID");
+    std::string jid = value ? reinterpret_cast<const char*>(value) : "";
+
+    if (value) xmlFree(value);
+    return jid;
+}
+
+static std::string FileStateJID(const char* filename, Error*& err)
+{
+    xmlDocPtr disk = xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS);
+    if (!disk) {
+        err = SetXmlError(filename);
+        return {};
+    }
+
+    std::string jid = StateJID(disk);
+    xmlFreeDoc(disk);
+    return jid;
+}
+
+static bool FlushFile(const char* filename, Error*& err)
+{
+    int fd = open(filename, O_RDONLY);
+    if (fd < 0) {
+        err = new Error{lvl::ERR, "Cannot open saved XML for flush", filename};
+        return false;
+    }
+
+    if (fsync(fd) != 0) {
+        close(fd);
+        err = new Error{lvl::ERR, "Cannot flush saved XML", filename};
+        return false;
+    }
+
+    close(fd);
+    return true;
+}
+
 
 }
 
@@ -111,19 +195,72 @@ void XmlDoc::Save(const char* filename) {
     if (!doc || !filename) return;
     MUTABLE_CHECK(doc, return);
 
-    if (JRNL)
-        { JRNL->StampState("Save", ""); if (JRNL->err) { err = JRNL->err; return; } }
+    if (JRNL) {
+        FileLock lock(filename);
+        if (lock.err) { err = lock.err; return; }
+
+        /*
+         * STATE_JID is the optimistic-concurrency token.  Once the lock is
+         * held, the disk DOM must still be the state from which this DOM was
+         * loaded.  Otherwise another writer committed while this object was
+         * open and this stale DOM must not overwrite it.
+         */
+        const std::string state = StateJID(doc);
+
+        Error* disk_err = nullptr;
+        const std::string disk_state = FileStateJID(filename, disk_err);
+        if (disk_err) { err = disk_err; return; }
+
+        if (disk_state != state) {
+            err = new Error{
+                lvl::WARN,
+                "DOM has changed since it was opened",
+                filename
+            };
+            return;
+        }
+
+        /*
+         * Journal first, source DOM second.  STATE_JID in the source DOM is
+         * therefore the commit pointer: an interrupted save may leave the
+         * journal ahead, but must not publish a source STATE_JID which the
+         * journal does not yet contain.
+         */
+        JRNL->StampState("Save", "");
+        if (JRNL->err) { err = JRNL->err; JRNL->err = nullptr; return; }
+
+        JRNL->Save();
+        if (JRNL->err) { err = JRNL->err; JRNL->err = nullptr; return; }
+
+        const char* journal_file = JRNL->doc && JRNL->doc->URL
+            ? reinterpret_cast<const char*>(JRNL->doc->URL) : nullptr;
+        if (!journal_file || !*journal_file) {
+            err = new Error{lvl::ERR, "Journal has no filename", filename};
+            return;
+        }
+        if (!FlushFile(journal_file, err)) return;
+
+        bool rc = xmlSaveFormatFileEnc(filename, doc, "UTF-8", 1) >= 0;
+        if (!rc) { err = SetXmlError(filename); return; }
+        if (!FlushFile(filename, err)) return;
+
+        if (!doc->URL || strcmp((const char*)doc->URL, filename) != 0) {
+            if (doc->URL) xmlFree((void*) doc->URL);
+            doc->URL = xmlStrdup(BAD_CAST filename);
+        }
+        return;
+    }
 
     bool rc = xmlSaveFormatFileEnc(filename, doc, "UTF-8", 1) >= 0;
     if (!rc) { err = SetXmlError(filename); return;}
 
     if (!doc->URL || strcmp((const char*)doc->URL, filename) != 0) {
-        if (doc->URL) xmlFree((void*) doc->URL); 
+        if (doc->URL) xmlFree((void*) doc->URL);
         doc->URL = xmlStrdup(BAD_CAST filename);
     }
 
     if (JRNL)
-        { JRNL->Save(); if (JRNL->err) err = JRNL->err; }
+        { JRNL->Save(); if (JRNL->err) { err = JRNL->err; JRNL->err = nullptr; } }
 }
 
 void XmlDoc::Save() {
@@ -215,7 +352,7 @@ void XmlDoc::clear() {
         ctxt = nullptr;
     }
     if (doc) {
-        if (JRNL) { JRNL->Save(); delete JRNL; JRNL = nullptr; }
+        if (JRNL) { delete JRNL; JRNL = nullptr; }
         // xmlFreeDoc(doc);
         // doc = nullptr;
     }
