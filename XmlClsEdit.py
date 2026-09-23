@@ -143,6 +143,7 @@ class XmlClsEditor(QMainWindow):
         self.paste_before_action.triggered.connect(lambda: self.paste_xml("AddBefore"))
 
         self.direct_action = QAction("&Direct...", self)
+        self.direct_action.setShortcut(QKeySequence(Qt.Key.Key_F2))
         self.direct_action.triggered.connect(self.direct_edit)
 
         # The editor's motivating operation; remove if Delete belongs elsewhere.

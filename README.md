@@ -1,23 +1,23 @@
 # XmlCls
 
 ## Overview
-`XmlCls` is a lightweight C++ wrapper around **libxml2** that provides safer, more expressive access to XML documents, nodes, and XPath queries. It is designed for configurationâ€‘driven systems where XML is the primary interchange format and where explicit error propagation is preferred over exceptions.
+`XmlCls` is a lightweight C++ wrapper around **libxml2** that provides safer, more expressive access to XML documents, nodes, and XPath queries. It is designed for configuration-driven systems where XML is the primary interchange format and where explicit error propagation is preferred over exceptions.
 
 Key characteristics:
 - No exception throwing; all failures are reported through an explicit `Error` structure.
 - Lightweight C++ wrappers around `libxml2` document, node, and XPath objects.
-- Stronglyâ€‘typed XPath accessors using templates.
+- Strongly-typed XPath accessors using templates.
 - Optional XML mutation journaling through `XmlJrnl`.
-- Minimal policy assumptions, making it suitable for console, GUI, embeddedâ€‘host, or service environments.
+- Minimal policy assumptions, making it suitable for console, GUI, embedded-host, or service environments.
 
 The design aligns well with systems that require deterministic behavior, auditability, and predictable error handling.
 
 ## Files
-- **XmlCls.h** â€“ Public C++ API declarations: classes, methods, and inline helpers.
-- **XmlCls.cpp** â€“ Parsing, XPath evaluation, mutation, journaling, and undo implementations.
-- **XmlClsLib.cpp** â€“ Minimal language-neutral `extern "C"` facade over selected C++ `XmlNode` operations.
-- **XmlCls.py** â€“ Lightweight Python/`ctypes` interface using libxml2 directly for document parsing and XPath, with selected C++ operations exposed through `XmlClsLib.so`.
-- **XmlClsEdit.py** â€“ Lightweight PyQt6 tree editor built on the Python and C interfaces.
+- **XmlCls.h** – Public C++ API declarations: classes, methods, and inline helpers.
+- **XmlCls.cpp** – Parsing, XPath evaluation, mutation, journaling, and undo implementations.
+- **XmlClsLib.cpp** – Language-neutral `extern "C"` facade over the C++ `XmlDoc`, `XmlNode`, and `XmlJrnl` APIs.
+- **XmlCls.py** – Lightweight Python/`ctypes` interface over `XmlClsLib.so`, preserving the C++ document, node, XPath, mutation, journal, and error semantics.
+- **XmlClsEdit.py** – Lightweight PyQt6 tree editor built on the Python interface, including XPath result navigation.
 
 ## Dependencies
 - **libxml2** (headers and library)
@@ -96,7 +96,7 @@ modified.
 
 A lightweight Python interface is provided for applications and scripting environments that need the core `XmlCls` navigation model without duplicating the C++ implementation.
 
-The Python layer uses `ctypes` to call libxml2 directly for parsing and XPath evaluation. `XmlCls` represents the document and `XmlNode` is a lightweight wrapper around an `xmlNodePtr`. Relative node XPath uses `xmlXPathNodeEval()`, so evaluation does not modify the persistent XPath context node.
+The Python layer uses `ctypes` only as the ABI bridge into `XmlClsLib.so`; it does not independently implement parsing, XPath, mutation, or journaling with libxml2. `XmlCls` represents the C++ `XmlDoc` and `XmlNode` remains a lightweight wrapper around an `xmlNodePtr`. Document and node-relative XPath therefore use the same canonical C++ implementation and error semantics as native callers.
 
 Supported typed XPath results currently include:
 
@@ -143,56 +143,103 @@ As in the C++ interface, routine XML and XPath errors are reported through an `E
 
 ### `XmlClsLib.so`
 
-Selected C++ functionality is exposed through a small language-neutral `extern "C"` facade in `XmlClsLib.so`. The ABI remains independent of Python and covers document attachment, saving, journal control, restore points, node serialization, and mutation:
+The C++ API is exposed through a language-neutral `extern "C"` facade in
+`XmlClsLib.so`. The facade is intentionally an ABI adapter rather than a second
+XML implementation: parsing, XPath evaluation, node mutation, journaling, and
+path generation delegate to the corresponding `XmlDoc`, `XmlNode`, or
+`XmlJrnl` methods.
+
+The interface now covers document construction and lifetime, typed XPath,
+journal access and state operations, node serialization and structural paths,
+and all editor mutation operations. Representative entry points include:
 
 ```c
-void* XmlDoc_Attach(xmlDocPtr doc);
-void XmlDoc_Detach(void* owner);
-int XmlDoc_Save(void* owner, const char* filename);
+void* XmlDoc_FromFile(const char* filename);
+void* XmlDoc_FromXML(const char* XML);
+void* XmlDoc_Attach(xmlDocPtr raw);
+void XmlDoc_Free(void* owner);
 
-int XmlDoc_OpenJournal(void* owner, const char* filename);
-int XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML);
-int XmlDoc_Undo(void* owner);
-int XmlDoc_Redo(void* owner);
+void XmlDoc_Save(void* owner, const char* filename);
+void XmlDoc_OpenJournal(void* owner, const char* filename);
+void XmlDoc_CreateJournal(void* owner, const char* filename, const char* XML);
 int XmlDoc_HasJournal(void* owner);
-int XmlDoc_MarkRelease(void* owner, const char* note);
-int XmlDoc_MarkRestorePoint(void* owner, const char* note, char* jid, size_t capacity);
-size_t XmlDoc_RestorePoints(void* owner, char* buffer, size_t capacity);
-int XmlDoc_Restore(void* owner, const char* jid);
+void* XmlDoc_Journal(void* owner);
 
-size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t capacity);
+const char* XmlDoc_XPathString(void* owner, xmlNodePtr node, const char* query);
+double XmlDoc_XPathDouble(void* owner, xmlNodePtr node, const char* query);
+int XmlDoc_XPathInt(void* owner, xmlNodePtr node, const char* query);
+int XmlDoc_XPathBool(void* owner, xmlNodePtr node, const char* query);
+xmlNodePtr XmlDoc_XPathNode(void* owner, xmlNodePtr node, const char* query);
+size_t XmlDoc_XPathNodes(void* owner, xmlNodePtr node, const char* query,
+                         xmlNodePtr* nodes, size_t capacity);
+
+const char* XmlNode_XML(xmlNodePtr node);
+const char* XmlNode_GetPath(xmlNodePtr node);
 xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML);
 xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML);
 xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML);
 xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML);
-int XmlNode_MoveChild(xmlNodePtr node, xmlNodePtr parent);
-int XmlNode_MoveBefore(xmlNodePtr node, xmlNodePtr sibling);
-int XmlNode_MoveAfter(xmlNodePtr node, xmlNodePtr sibling);
-int XmlNode_Delete(xmlNodePtr node);
+void XmlNode_MoveChild(xmlNodePtr node, xmlNodePtr parent);
+void XmlNode_MoveBefore(xmlNodePtr node, xmlNodePtr sibling);
+void XmlNode_MoveAfter(xmlNodePtr node, xmlNodePtr sibling);
+void XmlNode_Delete(xmlNodePtr node);
 
-const char* XmlCls_LastError(void);
+void XmlJrnl_Undo(void* journal);
+void XmlJrnl_Redo(void* journal);
+void XmlJrnl_MarkRelease(void* journal, const char* note);
+const char* XmlJrnl_StampState(void* journal, const char* type, const char* note);
+void XmlJrnl_Restore(void* journal, const char* jid);
 ```
 
-`XmlDoc_Attach()` automatically reads the document element's `JRNL` attribute,
-opens the referenced journal, and validates `STATE_JID`. C and Python consumers
-therefore receive the same journal-aware document as native C++ callers without
-calling `XmlDoc_OpenJournal()` themselves. The explicit function remains
-available for documents whose journal is selected programmatically and is
-idempotent when the declared journal is already open.
+`XmlNode_GetPath()` is a thin wrapper around `XmlNode::GetPath()`. The editor
+uses it to display the structural XPath of the selected node without duplicating
+libxml2 traversal in either the C or Python layer.
 
-The XML serialization interface uses a caller-provided buffer rather than returning an allocation owned by C++:
+#### Error propagation across the C ABI
 
-```c
-size_t XmlNode_XML(xmlNodePtr node, char* buffer, size_t size);
+The C++ library reports operational failures through `struct Error` rather than
+exceptions:
+
+```cpp
+struct Error {
+    lvl level;
+    std::string msg;
+    std::string data;
+};
 ```
 
-This keeps allocation ownership on the caller's side and makes the same shared library usable from Python, C#, LabVIEW, and other environments capable of calling a C ABI.
+The C facade preserves the same information in its C-compatible `CError`
+representation. Errors produced by a C++ `XmlDoc` or `XmlNode` operation are
+transferred to the corresponding thread-local C error channel and retrieved
+with `XmlDoc_Error()` or `XmlNode_Error()`. Python immediately copies the
+severity, message, and diagnostic data into a Python-owned `CError` before the
+C allocation is released.
 
-All object code linked into `XmlClsLib.so`, including objects extracted from static libraries, must be compiled as position-independent code (`-fPIC`).
+Consequently, the same diagnostic information follows an operation through the
+entire stack:
 
-`XmlCls_LastError()` returns thread-local storage owned by the library. Callers
-must copy the message if it must survive the next C-interface call on that
-thread.
+```text
+XmlDoc / XmlNode / XmlJrnl
+        ↓
+      Error
+        ↓
+ XmlClsLib.so CError
+        ↓
+ Python CError
+        ↓
+ XmlClsEdit ErrorPopup
+```
+
+The adapters do not invent a second success/failure convention. C++ `void`
+operations such as `XmlNode::Delete()`, `parse()`, and the Move methods remain
+void-style operations in Python; the caller invokes the method and then
+inspects the object's `err`. Methods such as `AddChild()` that return an
+`XmlNode` carry their error on the returned node, matching the C++ API.
+
+Strings returned by the C facade are borrowed thread-local strings and must be
+copied by callers that need to retain them across subsequent interface calls.
+All object code linked into `XmlClsLib.so`, including objects extracted from
+static libraries, must be compiled as position-independent code (`-fPIC`).
 
 ### `XmlClsEdit.py`
 
@@ -205,8 +252,35 @@ Run the editor with an optional XML filename:
 
 ```bash
 python3 XmlClsEdit.py
-python3 XmlClsEdit.py PonziCoin.xml
+python3 XmlClsEdit.py Config.xml
 ```
+
+Between the menu bar and XML tree, the editor provides an XPath navigation
+field with a result-position indicator and Up/Down navigation buttons. Selecting
+a tree item displays that node's `XmlNode::GetPath()` value in the field.
+
+The field can also be edited as an XPath node-list query. The Up/Down buttons
+evaluate the query as `list[XmlNode]`, move the tree cursor among the matching
+nodes, expand and scroll the tree as required, and display the current position
+as `N/M` (for example, `3/7`). Navigation wraps at either end of the result set.
+A query with no matching nodes displays `0/0`. While navigating a result set,
+the manually entered XPath remains in the field rather than being replaced by
+the structural path of each selected result.
+
+The tree also retains the standard Qt `QTreeView` keyboard navigation:
+
+- **Up / Down** – move to the previous or next visible item.
+- **Left / Right** – collapse or expand the current item.
+- **- / +** – collapse or expand the current item.
+- **\*** – expand the current item and all of its descendants.
+- **Home / End** – move to the first or last visible item.
+- **Page Up / Page Down** – move through the tree by viewport pages.
+- **F2** – open the editor's Direct XML editor for the current node.
+
+Except for **F2**, which is connected to `Edit → Direct...`, these navigation
+keys are standard `QTreeView` behavior and require no editor-specific key
+handling. **View → Collapse All** and **View → Expand All** remain available
+for whole-tree operations.
 
 The menus provide:
 
@@ -267,14 +341,13 @@ A source document declares a persistent journal with attributes on its document
 element:
 
 ```xml
-<PonziCoin JRNL="PonziCoin.xml.jrnl"
-           STATE_JID="0123456789abcdef">
+<Config JRNL="Config.xml.jrnl" STATE_JID="0123456789abcdef">
 ```
 
 The document element may have any name. `JRNL` contains the journal filename;
 relative names are resolved from the source XML file's directory. Appending
 `.jrnl` to the complete source filename gives predictable names such as
-`PonziCoin.xml.jrnl`, `conf_file.yaml.jrnl`, or `conf_file.json.jrnl`.
+`Config.xml.jrnl`, `conf_file.yaml.jrnl`, or `conf_file.json.jrnl`.
 
 Every `XmlDoc` construction path,including wrapping an existing `xmlDocPtr`,
 opens and validates a declared journal automatically. Applications such as
