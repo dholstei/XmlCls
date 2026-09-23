@@ -8,8 +8,9 @@ from pathlib import Path
 from PyQt6.QtCore import QByteArray, QMimeData, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QMainWindow, QMessageBox,
-    QInputDialog, QPlainTextEdit, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QInputDialog, QPlainTextEdit, QToolButton,
+    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from XmlCls import CError, XmlCls, XmlNode, lvl
@@ -59,10 +60,48 @@ class XmlClsEditor(QMainWindow):
 
         QApplication.clipboard().dataChanged.connect(self.clipboard_changed)
 
+        self.node_items = {}
+        self.query_nodes = []
+        self.query_index = -1
+        self.query_text = ""
+
+        self.path_edit = QLineEdit(self)
+        self.path_edit.setPlaceholderText("XPath node query")
+        self.path_edit.textEdited.connect(self._query_edited)
+
+        self.query_position = QLabel("", self)
+        self.query_position.setMinimumWidth(45)
+        self.query_position.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.query_up = QToolButton(self)
+        self.query_up.setArrowType(Qt.ArrowType.UpArrow)
+        self.query_up.setToolTip("Previous XPath result")
+        self.query_up.clicked.connect(lambda: self._navigate_query(-1))
+
+        self.query_down = QToolButton(self)
+        self.query_down.setArrowType(Qt.ArrowType.DownArrow)
+        self.query_down.setToolTip("Next XPath result")
+        self.query_down.clicked.connect(lambda: self._navigate_query(1))
+
+        query_row = QHBoxLayout()
+        query_row.setContentsMargins(0, 0, 0, 0)
+        query_row.addWidget(self.path_edit, 1)
+        query_row.addWidget(self.query_position)
+        query_row.addWidget(self.query_up)
+        query_row.addWidget(self.query_down)
+
         self.tree = QTreeWidget(self)
         self.tree.setHeaderLabels(["Element", "Content"])
         self.tree.setAlternatingRowColors(True)
-        self.setCentralWidget(self.tree)
+        self.tree.currentItemChanged.connect(self._tree_selection_changed)
+
+        central = QWidget(self)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+        layout.addLayout(query_row)
+        layout.addWidget(self.tree, 1)
+        self.setCentralWidget(central)
 
         self._create_actions()
         self._create_menus()
@@ -336,6 +375,11 @@ class XmlClsEditor(QMainWindow):
 
     def populate_tree(self):
         self.tree.clear()
+        self.node_items.clear()
+        self.query_nodes = []
+        self.query_index = -1
+        self.query_text = ""
+        self.query_position.clear()
         if not self.dom:
             return
         root = self.dom.XPath("/*", XmlNode)
@@ -349,6 +393,7 @@ class XmlClsEditor(QMainWindow):
         tooltip = self._attribute_tooltip(node)
         item = QTreeWidgetItem([name, content])
         item.setData(0, XML_NODE_ROLE, c_void_p(node.node.value))
+        self.node_items[node.node.value] = item
         item.setToolTip(0, tooltip)
         item.setToolTip(1, tooltip)
         if parent is None:
@@ -372,6 +417,86 @@ class XmlClsEditor(QMainWindow):
             f'{attribute.XPath("name(.)", str)}    {attribute.XPath("string(.)", str)}'
             for attribute in node.XPath("./@*", list[XmlNode])
         )
+
+    def _tree_selection_changed(self, current, previous):
+        if not current or not self.dom:
+            return
+
+        ptr = current.data(0, XML_NODE_ROLE)
+        if not ptr:
+            return
+
+        node = XmlNode(self.dom, ptr if isinstance(ptr, c_void_p) else c_void_p(ptr))
+        path = node.GetPath()
+        if node.err:
+            ErrorPopup(node.err, self)
+            return
+
+        # A manual query remains visible while its result set is being navigated.
+        if self.query_nodes and self.query_text == self.path_edit.text():
+            return
+
+        self.path_edit.setText(path)
+        self.query_text = ""
+        self.query_nodes = []
+        self.query_index = -1
+        self.query_position.clear()
+
+    def _query_edited(self, text):
+        self.query_text = text
+        self.query_nodes = []
+        self.query_index = -1
+        self.query_position.clear()
+
+    def _load_query(self):
+        if not self.dom:
+            return False
+
+        query = self.path_edit.text().strip()
+        if not query:
+            return False
+
+        if query != self.query_text or not self.query_nodes:
+            self.query_text = query
+            self.query_nodes = self.dom.XPath(query, list[XmlNode])
+            self.query_index = -1
+
+            if self.dom.err:
+                ErrorPopup(self.dom.err, self)
+                self.query_nodes = []
+                self.query_position.clear()
+                return False
+
+            if not self.query_nodes:
+                self.query_position.setText("0/0")
+                return False
+
+        return True
+
+    def _navigate_query(self, step):
+        if not self._load_query():
+            return
+
+        count = len(self.query_nodes)
+        if self.query_index < 0:
+            self.query_index = 0 if step > 0 else count - 1
+        else:
+            self.query_index = (self.query_index + step) % count
+
+        node = self.query_nodes[self.query_index]
+        item = self.node_items.get(node.node.value)
+        self.query_position.setText(f"{self.query_index + 1}/{count}")
+
+        if not item:
+            return
+
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item)
+        self.tree.expandItem(item)
+        parent = item.parent()
+        while parent:
+            parent.setExpanded(True)
+            parent = parent.parent()
 
     def current_node(self) -> XmlNode | None:
         if not self.dom:

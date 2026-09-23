@@ -85,7 +85,8 @@ CErrorPtr XmlDoc_Error()
 
 CErrorPtr XmlNode_Error()
 {
-    if (!LastNodeErr) return nullptr;
+    if (!LastNodeErr)
+        return nullptr;
 
     CErrorPtr ans = ConvertToCError(LastNodeErr);
     delete LastNodeErr;
@@ -347,6 +348,24 @@ size_t XmlDoc_XPathNodes(void* owner, xmlNodePtr node, const char* query,
  * XmlNode is deliberately not allocated by the C layer.  The temporary C++
  * wrapper exists only long enough to invoke the canonical XmlCls method.
  */
+
+/**
+ * @brief Return the structural XPath for a node.
+ * @param node Node whose path is requested.
+ * @return Borrowed null-terminated string valid until the next string-returning
+ *         C-interface call on this thread.
+ */
+const char* XmlNode_GetPath(xmlNodePtr node)
+{
+    ClearLastNodeError();
+    LastString.clear();
+    if (!node) return LastString.c_str();
+
+    XmlNode n(node);
+    LastString = n.GetPath();
+    TakeNodeError(n);
+    return LastString.c_str();
+}
 
 const char* XmlNode_XML(xmlNodePtr node)
 {

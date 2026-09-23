@@ -108,6 +108,9 @@ class XmlCls:
         ]
         lib.XmlDoc_XPathNodes.restype = c_size_t
 
+        lib.XmlNode_GetPath.argtypes = [c_void_p]
+        lib.XmlNode_GetPath.restype = c_char_p
+
         lib.XmlNode_XML.argtypes = [c_void_p]
         lib.XmlNode_XML.restype = c_char_p
         lib.XmlNode_Parse.argtypes = [c_void_p, c_char_p]
@@ -313,6 +316,11 @@ class XmlNode:
         self.err = self.owner.err
         self.owner.err = None
         return ans
+
+    def GetPath(self):
+        ans = self.owner._lib.XmlNode_GetPath(self.node)
+        self._take_error()
+        return self.owner._decode(ans)
 
     def XML(self):
         ans = self.owner._lib.XmlNode_XML(self.node)
