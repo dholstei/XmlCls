@@ -352,7 +352,7 @@ void XmlDoc::clear() {
         ctxt = nullptr;
     }
     if (doc) {
-        if (JRNL) { delete JRNL; JRNL = nullptr; }
+        if (JRNL) { JRNL->Save(); delete JRNL; JRNL = nullptr; }
         // xmlFreeDoc(doc);
         // doc = nullptr;
     }
@@ -969,7 +969,7 @@ void XmlJrnl::Undo()
         return;
     }
 
-    auto actions = active_release.XPath<std::vector<XmlNode>>( "./Change[Reversed/@Value='false'][last()]" );
+    auto actions = active_release.XPath<std::vector<XmlNode>>( "./Change[not(Reversed)][last()]" );
 
     if (active_release.err) {
         err = active_release.err; return;
@@ -988,7 +988,7 @@ void XmlJrnl::Undo(XmlNode action_node)
         return;
     }
 
-    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+    if (action_node.XPath<bool>("./Reversed"))
         return;
 
     const std::string type = action_node.XPath<std::string>("@Type");
@@ -1043,8 +1043,8 @@ void XmlJrnl::Redo()
     }
 
     auto actions = active_release.XPath<std::vector<XmlNode>>(
-        "./Change[Reversed/@Value='true' and not(Reversed/@Redoable='false')"
-        " and not(following-sibling::Change[Reversed/@Value='false'])][1]"
+        "./Change[Reversed[not(@Abandoned)]"
+        " and not(following-sibling::Change[not(Reversed)])][1]"
     );
 
     if (active_release.err) {
@@ -1064,7 +1064,7 @@ void XmlJrnl::Redo(XmlNode action_node)
         return;
     }
 
-    if (!action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]") )
+    if (!action_node.XPath<bool>("./Reversed[not(@Abandoned)]") )
         return;
 
     const std::string type = action_node.XPath<std::string>("@Type");
@@ -1317,7 +1317,7 @@ void XmlJrnl::Restore(std::string jid)
         return;
     }
 
-    auto actions = restore_point.XPath<std::vector<XmlNode>>("following::Change[Reversed/@Value='false']");
+    auto actions = restore_point.XPath<std::vector<XmlNode>>("following::Change[not(Reversed)]");
     if (restore_point.err) { err = restore_point.err; return; }
 
     Undo(actions);
@@ -1405,18 +1405,20 @@ ActionModify::ActionModify(XmlJrnl& j, XmlNode action)
 
 void Action::ReverseStamp()
 {
-    auto reversed = action_node.XPath<std::vector<XmlNode>>("./Reversed");
-
-    if (reversed.size() != 1) {
-        err = new Error{lvl::ERR, "Journal action contains invalid Reversed state", action_node.GetPath()};
+    if (action_node.XPath<bool>("boolean(./Reversed)")) {
+        err = new Error{lvl::ERR, "Journal action is already reversed", action_node.GetPath()};
         return;
     }
 
-    xmlSetProp(reversed[0].node, BAD_CAST "Value", BAD_CAST "true");
-
     const std::string timestamp = CurrentIsoTimestampUTC();
-    xmlSetProp(reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str());
-    xmlSetProp(reversed[0].node, BAD_CAST "Redoable", BAD_CAST "true");
+    XmlNode reversed = action_node.AddChild(
+        "<Reversed TimeStamp=\"" + timestamp + "\"/>"
+    );
+
+    if (reversed.err) {
+        err = reversed.err;
+        reversed.err = nullptr;
+    }
 }
 
 void Action::ForwardStamp()
@@ -1428,9 +1430,11 @@ void Action::ForwardStamp()
         return;
     }
 
-    xmlSetProp(reversed[0].node, BAD_CAST "Value", BAD_CAST "false");
-    xmlSetProp(reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST "");
-    xmlSetProp(reversed[0].node, BAD_CAST "Redoable", BAD_CAST "true");
+    reversed[0].Delete();
+    if (reversed[0].err) {
+        err = reversed[0].err;
+        reversed[0].err = nullptr;
+    }
 }
 
 void ActionModify::Record()
@@ -1460,7 +1464,7 @@ void ActionModify::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+    if (action_node.XPath<bool>("./Reversed"))
         return;
 
     if (jid.empty()) {
@@ -1577,7 +1581,7 @@ void ActionModify::Undo()
 
 void ActionModify::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -1675,7 +1679,7 @@ void ActionDelete::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+    if (action_node.XPath<bool>("./Reversed"))
         return;
 
     if (jid.empty()) {
@@ -1799,7 +1803,7 @@ void ActionDelete::Undo()
 
 void ActionDelete::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -1880,7 +1884,7 @@ void ActionAdd::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+    if (action_node.XPath<bool>("./Reversed"))
         return;
 
     if (jid.empty()) {
@@ -1948,7 +1952,7 @@ void ActionAdd::Undo()
 
 void ActionAdd::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -2151,7 +2155,7 @@ void ActionMove::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed[@Value='true']"))
+    if (action_node.XPath<bool>("./Reversed"))
         return;
 
     auto it = jrnl.jid_map.find(jid);
@@ -2255,7 +2259,7 @@ void ActionMove::Undo()
 
 void ActionMove::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Redoable='false')]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();

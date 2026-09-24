@@ -636,7 +636,7 @@ private:
  * @brief Base class for a journal Change transaction.
  *
  * Action owns behavior common to every transaction type: creation of the
- * Change element shell, Type, JID, and TimeStamp attributes, Reversed state, common
+ * Change element shell, Type, JID, and TimeStamp attributes, reversal state, common
  * conflict reporting, and reversal stamping.  Derived classes contribute only
  * their action-specific payload and inverse DOM operation.
  */
@@ -676,20 +676,19 @@ struct Action {
 
         /* A new edit abandons, but does not erase, the previous redo branch. */
         auto abandoned = jrnl.active_release.XPath<std::vector<XmlNode>>(
-            "./Change/Reversed[@Value='true' and not(@Redoable='false')]"
+            "./Change/Reversed[not(@Abandoned)]"
         );
         if (jrnl.active_release.err) {
             err = jrnl.active_release.err;
             return;
         }
         for (auto& reversed : abandoned)
-            xmlSetProp(reversed.node, BAD_CAST "Redoable", BAD_CAST "false");
+            xmlSetProp(reversed.node, BAD_CAST "Abandoned", BAD_CAST "true");
 
         std::string xml =
             "\n<Change Type=\"" + type + "\""
             " TimeStamp=\"" + CurrentIsoTimestampUTC() + "\""
             " JID=\"" + jid + "\">"
-            "<Reversed TimeStamp=\"\" Value=\"false\" Redoable=\"true\"/>"
             "</Change>\n";
 
         action_node = jrnl.active_release.AddChild(xml);
@@ -705,11 +704,11 @@ struct Action {
 
 protected:
     /**
-     * @brief Mark a successfully undone action as reversed and timestamp it.
+     * @brief Mark a successfully undone action by adding a Reversed timestamp.
      */
     void ReverseStamp();
 
-    /** Mark a successfully redone action as live again. */
+    /** Mark a successfully redone action as live by removing Reversed. */
     void ForwardStamp();
 
     /**
