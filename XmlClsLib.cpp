@@ -569,6 +569,32 @@ const char* XmlJrnl_StampState(void* journal, const char* type, const char* note
 }
 
 
+const char* XmlJrnl_RestorePoints(void* journal)
+{
+    ClearLastDocError();
+    LastString.clear();
+
+    XmlJrnl* jrnl = static_cast<XmlJrnl*>(journal);
+    if (!jrnl)
+        return LastString.c_str();
+
+    LastString = "<RestorePoints>";
+    auto states = jrnl->XPath<std::vector<XmlNode>>("//State[@Type='RestorePoint']");
+    TakeDocError(jrnl);
+
+    if (LastDocErr) {
+        LastString.clear();
+        return LastString.c_str();
+    }
+
+    for (const auto& state : states)
+        LastString += state.XML();
+
+    LastString += "</RestorePoints>";
+    return LastString.c_str();
+}
+
+
 void XmlJrnl_Restore(void* journal, const char* jid)
 {
     ClearLastDocError();

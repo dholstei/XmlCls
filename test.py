@@ -1,5 +1,11 @@
 
-from XmlCls import XmlCls
+from XmlCls import XmlCls, lvl
+
+
+def print_error(error):
+    print(f"level: {error.level.name}")
+    print(f"msg:   {error.msg}")
+    print(f"data:  {error.data}")
 
 if __name__ == "__main__":
     dom = XmlCls("<root><child value='3.14'>text</child></root>")
@@ -12,3 +18,12 @@ if __name__ == "__main__":
     val_str = chile.XPath("@value", str)
     print(val_str)
     print(chile.XML())
+
+
+    bad = XmlCls("<PonziCoin>")
+    assert bad.err is not None
+    assert bad.err.level == lvl.ERR
+    print_error(bad.err)
+
+    good = XmlCls("<PonziCoin/>")
+    assert good.err is None
