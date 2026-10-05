@@ -2,6 +2,7 @@
 """Lightweight PyQt6 tree editor for the XmlCls/libxml2 DOM."""
 
 import sys
+import traceback
 from ctypes import c_char_p, c_void_p
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QToolButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
-from XmlCls import CError, XmlCls, XmlNode
+from XmlCls import Error, CError, XmlCls, XmlNode
 
 
 XML_NODE_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -250,7 +251,7 @@ class XmlClsEditor(QMainWindow):
         self.cancel_cut()
         dom = XmlCls(c_char_p(str(filename).encode("utf-8")))
         if dom.err:
-            ErrorPopup(dom.err, self)
+            dom.err.publish()
         if not dom.doc:
             self._error("Open failed", getattr(dom.err, "msg", "Unable to parse the XML file"))
             return
@@ -293,7 +294,7 @@ class XmlClsEditor(QMainWindow):
         filename = f"{Path(self.filename).name}.jrnl"
         self.dom.CreateJournal(filename)
         if self.dom.err:
-            ErrorPopup(self.dom.err, self)
+            self.dom.err.publish()
             return
         self.populate_tree()
         self._set_dirty(True)
@@ -311,7 +312,7 @@ class XmlClsEditor(QMainWindow):
             return
         jrnl.MarkRelease(note)
         if jrnl.err:
-            ErrorPopup(jrnl.err, self)
+            jrnl.err.publish()
 
     def undo_journal(self):
         if not self.dom:
@@ -321,7 +322,7 @@ class XmlClsEditor(QMainWindow):
             return
         jrnl.Undo()
         if jrnl.err:
-            ErrorPopup(jrnl.err, self)
+            jrnl.err.publish()
             return
         self.populate_tree()
         self._set_dirty(True)
@@ -335,7 +336,7 @@ class XmlClsEditor(QMainWindow):
             return
         jrnl.Redo()
         if jrnl.err:
-            ErrorPopup(jrnl.err, self)
+            jrnl.err.publish()
             return
         self.populate_tree()
         self._set_dirty(True)
@@ -350,7 +351,7 @@ class XmlClsEditor(QMainWindow):
             return
         jrnl.StampState("RestorePoint", note)
         if jrnl.err:
-            ErrorPopup(jrnl.err, self)
+            jrnl.err.publish()
             return
         self._set_dirty(True)
         self.refresh_journal_menu()
@@ -365,7 +366,7 @@ class XmlClsEditor(QMainWindow):
             return
         self.dom.Restore(jid)
         if self.dom.err:
-            ErrorPopup(self.dom.err, self)
+            self.dom.err.publish()
             return
         self.populate_tree()
         self._set_dirty(True)
@@ -382,7 +383,7 @@ class XmlClsEditor(QMainWindow):
 
         self.dom.Save(self.filename)
         if self.dom.err:
-            ErrorPopup(self.dom.err, self)
+            self.dom.err.publish()
             return
 
         self._set_dirty(False)
@@ -539,7 +540,7 @@ class XmlClsEditor(QMainWindow):
         node = XmlNode(self.dom, ptr if isinstance(ptr, c_void_p) else c_void_p(ptr))
         path = node.GetPath()
         if node.err:
-            ErrorPopup(node.err, self)
+            node.err.publish()
             return
 
         # A manual query remains visible while its result set is being navigated.
@@ -572,7 +573,7 @@ class XmlClsEditor(QMainWindow):
             self.query_index = -1
 
             if self.dom.err:
-                ErrorPopup(self.dom.err, self)
+                self.dom.err.publish()
                 self.query_nodes = []
                 self.query_position.clear()
                 return False
@@ -679,7 +680,7 @@ class XmlClsEditor(QMainWindow):
         # Match C++ semantics: void methods return None; Add* returns XmlNode.
         target = result if isinstance(result, XmlNode) else node
         if target.err:
-            ErrorPopup(target.err, self)
+            target.err.publish()
             return
 
         self.populate_tree()
@@ -707,17 +708,17 @@ def ErrorPopup(err: CError | None, parent=None):
         return
 
     title = {
-        lvl.NOERR: "Information",
-        lvl.INFO:  "Information",
-        lvl.WARN:  "Warning",
-        lvl.ERR:   "Error",
+        Error.lvl.NOERR: "Information",
+        Error.lvl.INFO:  "Information",
+        Error.lvl.WARN:  "Warning",
+        Error.lvl.ERR:   "Error",
     }.get(err.level, "Error")
 
     icon = {
-        lvl.NOERR: QMessageBox.Icon.Information,
-        lvl.INFO:  QMessageBox.Icon.Information,
-        lvl.WARN:  QMessageBox.Icon.Warning,
-        lvl.ERR:   QMessageBox.Icon.Critical,
+        Error.lvl.NOERR: QMessageBox.Icon.Information,
+        Error.lvl.INFO:  QMessageBox.Icon.Information,
+        Error.lvl.WARN:  QMessageBox.Icon.Warning,
+        Error.lvl.ERR:   QMessageBox.Icon.Critical,
     }.get(err.level, QMessageBox.Icon.Critical)
 
     box = QMessageBox(parent)
@@ -731,6 +732,22 @@ def ErrorPopup(err: CError | None, parent=None):
 
 def main() -> int:
     app = QApplication(sys.argv)
+
+    console_publish = Error.publisher
+
+    def QWin_raise_on_error(error):
+        console_publish(error)
+        if error.level == Error.lvl.ERR:
+            dialog = QMessageBox()
+            dialog.setIcon(QMessageBox.Icon.Critical)
+            dialog.setWindowTitle(error.level.name)
+            dialog.setText(error.msg)
+            dialog.setInformativeText(error.data)
+            dialog.setDetailedText("".join(traceback.format_stack()))
+            dialog.exec()
+
+    Error.publisher = QWin_raise_on_error
+
     filename = sys.argv[1] if len(sys.argv) > 1 else None
     window = XmlClsEditor(filename)
     window.show()
