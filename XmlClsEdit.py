@@ -8,12 +8,12 @@ from pathlib import Path
 from PyQt6.QtCore import QByteArray, QFileSystemWatcher, QMimeData, QTimer, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QInputDialog, QPlainTextEdit, QToolButton,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QInputDialog,
+    QPlainTextEdit, QToolButton, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
-
-from XmlCls import CError, XmlCls, XmlNode, lvl
+from XmlCls import CError, XmlCls, XmlNode
 
 
 XML_NODE_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -43,6 +43,14 @@ class DirectEditor(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.editor)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
     def xml(self) -> str:
         return self.editor.toPlainText()
