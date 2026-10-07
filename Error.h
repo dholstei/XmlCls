@@ -1,20 +1,47 @@
 #pragma once
-#include <functional>
+
 #include <cstdio>
+#include <functional>
 #include <string>
-#include <cstring>
 
-enum lvl {NOERR, INFO, WARN, ERR};
+enum lvl : int {NOERR, INFO, WARN, ERR};
 
-typedef struct Error {
+struct CError;
+
+struct Error {
     lvl level;
     std::string msg;
     std::string data;
 
-} *ErrorPtr;
+    /// Return an independently owned C representation of this error.
+    CError* ToCError() const;
+};
 
-inline std::string LvlStr(lvl level) {
-    switch(level){
+using ErrorPtr = Error*;
+
+/// Plain-layout error exposed across the shared-library boundary.
+struct CError {
+    lvl level;
+    char* msg;
+    char* data;
+
+    CError(lvl level, const char* msg, const char* data);
+    CError(const Error& source);
+    ~CError();
+
+    CError(const CError&) = delete;
+    CError& operator=(const CError&) = delete;
+
+private:
+    /// Allocate an independent NUL-terminated copy for foreign callers.
+    static char* Copy(const char* source);
+};
+
+typedef CError* CErrorPtr;
+
+inline std::string LvlStr(lvl level)
+{
+    switch (level) {
         case NOERR: return "NOERR";
         case INFO:  return "INFO";
         case WARN:  return "WARN";
@@ -23,46 +50,25 @@ inline std::string LvlStr(lvl level) {
     }
 }
 
-// --- Default handlers (printf-based) ------------------------------
-
 inline std::function<void(const Error*)> g_handle_err_handler =
-    [](const Error* e) {
-        if (e && (e->level > NOERR))
-            std::printf("%s: %s\nDATA: %s\n", LvlStr(e->level).c_str(), e->msg.c_str(), e->data.c_str());
+    [](const Error* error) {
+        if (error && error->level > NOERR)
+            std::printf("%s: %s\nDATA: %s\n", LvlStr(error->level).c_str(),
+                        error->msg.c_str(), error->data.c_str());
     };
 
-// Helpers
-inline bool IsErr(const Error* e) {
-    return e && e->level > NOERR;
+inline bool IsErr(const Error* error)
+{
+    return error && error->level > NOERR;
 }
 
-// Convenient builder (your existing MsgErr)
-inline std::string MsgErr(const Error* e) {
-    return e ? e->msg : "";
+inline std::string MsgErr(const Error* error)
+{
+    return error ? error->msg : "";
 }
 
-#define MSG_ERR(e)  do { g_handle_err_handler(e); } while(0)
+#define MSG_ERR(error) do { g_handle_err_handler(error); } while (0)
 
-extern "C" {
-
-enum ErrLvl {
-  NOERR_ = NOERR,
-  INFO_ = INFO,
-  WARN_ = WARN,
-  ERR_ = ERR
-};
-
-typedef struct CError {
-    ErrLvl level;
-    char* msg;
-    char* data;
-
-} *CErrorPtr;
-
-CErrorPtr CreateCError(ErrLvl level, const char* msg, const char* data);
-
-void FreeCError(CErrorPtr e);
-
-CErrorPtr ConvertToCError(const Error* e);
-
-}
+// Foreign callers cannot invoke the C++ destructor directly.  Only the
+// exported function needs C linkage; CError itself does not have linkage.
+extern "C" void FreeCError(CError* error);

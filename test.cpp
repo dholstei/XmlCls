@@ -1080,7 +1080,8 @@ void test_journal_state_validation()
         CHECK(!state_jid.empty());
         CHECK_EQ(state_jid.size(), std::size_t{16});
 
-        XmlNode state = doc.JRNL->XPath<std::vector<XmlNode>>("(//State)[last()]")[0];
+        XmlNode state = doc.JRNL->XPath<XmlNode>("(//State)[last()]");
+        CHECK(!doc.JRNL->err);
 
         CHECK_EQ(state.XPath<std::string>("@JID"), state_jid);
         CHECK_EQ(state.XPath<std::string>("@Type"), std::string("Save"));

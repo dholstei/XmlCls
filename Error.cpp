@@ -1,27 +1,40 @@
 #include "Error.h"
 
-extern "C" {
+#include <cstring>
 
-CErrorPtr CreateCError(ErrLvl level, const char* msg, const char* data){
-    CErrorPtr e = (CErrorPtr)malloc(sizeof(CError));
-    if (!e) return nullptr;
-    e->level = level;
-    e->msg = msg ? strdup(msg) : nullptr;
-    e->data = data ? strdup(data) : nullptr;
-    return e;
+char* CError::Copy(const char* source)
+{
+    if (!source)
+        return nullptr;
+
+    const std::size_t size = std::strlen(source) + 1;
+    char* destination = new char[size];
+    std::memcpy(destination, source, size);
+    return destination;
 }
 
-void FreeCError(CErrorPtr e){
-    if (e) {
-        if (e->msg) free(e->msg);
-        if (e->data) free(e->data);
-        free(e);
-    }
+CError::CError(lvl level, const char* msg, const char* data)
+    : level(level), msg(Copy(msg)), data(Copy(data))
+{
 }
 
-CErrorPtr ConvertToCError(const Error* e) {
-    if (!e) return nullptr;
-    return CreateCError((ErrLvl) e->level, e->msg.c_str(), e->data.c_str());
+CError::CError(const Error& source)
+    : CError(source.level, source.msg.c_str(), source.data.c_str())
+{
 }
 
+CError::~CError()
+{
+    delete[] msg;
+    delete[] data;
+}
+
+CError* Error::ToCError() const
+{
+    return new CError(*this);
+}
+
+extern "C" void FreeCError(CError* error)
+{
+    delete error;
 }

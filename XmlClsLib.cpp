@@ -76,7 +76,7 @@ CErrorPtr XmlDoc_Error()
     if (!LastDocErr)
         return nullptr;
 
-    CErrorPtr ans = ConvertToCError(LastDocErr);
+    CErrorPtr ans = LastDocErr->ToCError();
     delete LastDocErr;
     LastDocErr = nullptr;
     return ans;
@@ -88,7 +88,7 @@ CErrorPtr XmlNode_Error()
     if (!LastNodeErr)
         return nullptr;
 
-    CErrorPtr ans = ConvertToCError(LastNodeErr);
+    CErrorPtr ans = LastNodeErr->ToCError();
     delete LastNodeErr;
     LastNodeErr = nullptr;
     return ans;

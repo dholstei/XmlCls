@@ -1,6 +1,7 @@
 #include "XmlCls.h"
 #include "base64.h"
 
+#include <cerrno>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -207,17 +208,30 @@ void XmlDoc::Save(const char* filename) {
          */
         const std::string state = StateJID(doc);
 
-        Error* disk_err = nullptr;
-        const std::string disk_state = FileStateJID(filename, disk_err);
-        if (disk_err) { err = disk_err; return; }
+        if (access(filename, F_OK) == 0) {
+            Error* disk_err = nullptr;
+            const std::string disk_state = FileStateJID(filename, disk_err);
+            if (disk_err) { err = disk_err; return; }
 
-        if (disk_state != state) {
-            err = new Error{
-                lvl::WARN,
-                "DOM has changed since it was opened",
-                filename
-            };
-            return;
+            if (disk_state != state) {
+                err = new Error{
+                    lvl::WARN,
+                    "DOM has changed since it was opened",
+                    filename
+                };
+                return;
+            }
+        }
+        else {
+            if (errno != ENOENT) {
+                err = new Error{lvl::ERR, "Cannot inspect saved DOM", filename};
+                return;
+            }
+
+            if (!state.empty()) {
+                err = new Error{lvl::WARN, "Saved DOM no longer exists", filename};
+                return;
+            }
         }
 
         /*
@@ -464,7 +478,7 @@ bool XmlDoc::XPath<bool>(std::string query, xmlNodePtr node)
         ans = result->boolval;
     
     else if (result->type == XPATH_NODESET)
-        ans = result->nodesetval->nodeNr > 0;
+        ans = result->nodesetval && result->nodesetval->nodeNr > 0;
 
     else
         err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
@@ -969,7 +983,9 @@ void XmlJrnl::Undo()
         return;
     }
 
-    auto actions = active_release.XPath<std::vector<XmlNode>>( "./Change[not(Reversed)][last()]" );
+    auto actions = active_release.XPath<std::vector<XmlNode>>(
+        "./Change[Reversed/@Value='false'][last()]"
+    );
 
     if (active_release.err) {
         err = active_release.err; return;
@@ -988,7 +1004,7 @@ void XmlJrnl::Undo(XmlNode action_node)
         return;
     }
 
-    if (action_node.XPath<bool>("./Reversed"))
+    if (action_node.XPath<bool>("./Reversed/@Value='true'"))
         return;
 
     const std::string type = action_node.XPath<std::string>("@Type");
@@ -1043,8 +1059,8 @@ void XmlJrnl::Redo()
     }
 
     auto actions = active_release.XPath<std::vector<XmlNode>>(
-        "./Change[Reversed[not(@Abandoned)]"
-        " and not(following-sibling::Change[not(Reversed)])][1]"
+        "./Change[Reversed[@Value='true' and not(@Abandoned)]"
+        " and not(following-sibling::Change[Reversed/@Value='false'])][1]"
     );
 
     if (active_release.err) {
@@ -1064,7 +1080,7 @@ void XmlJrnl::Redo(XmlNode action_node)
         return;
     }
 
-    if (!action_node.XPath<bool>("./Reversed[not(@Abandoned)]") )
+    if (!action_node.XPath<bool>("./Reversed[@Value='true' and not(@Abandoned)]") )
         return;
 
     const std::string type = action_node.XPath<std::string>("@Type");
@@ -1317,7 +1333,9 @@ void XmlJrnl::Restore(std::string jid)
         return;
     }
 
-    auto actions = restore_point.XPath<std::vector<XmlNode>>("following::Change[not(Reversed)]");
+    auto actions = restore_point.XPath<std::vector<XmlNode>>(
+        "following::Change[Reversed/@Value='false']"
+    );
     if (restore_point.err) { err = restore_point.err; return; }
 
     Undo(actions);
@@ -1405,20 +1423,33 @@ ActionModify::ActionModify(XmlJrnl& j, XmlNode action)
 
 void Action::ReverseStamp()
 {
-    if (action_node.XPath<bool>("boolean(./Reversed)")) {
+    auto reversed = action_node.XPath<std::vector<XmlNode>>("./Reversed");
+    if (action_node.err) {
+        err = action_node.err;
+        action_node.err = nullptr;
+        return;
+    }
+
+    if (reversed.size() != 1) {
+        err = new Error{lvl::ERR, "Journal action contains invalid Reversed state", action_node.GetPath()};
+        return;
+    }
+
+    const std::string value = reversed[0].XPath<std::string>("@Value");
+    if (reversed[0].err) {
+        err = reversed[0].err;
+        reversed[0].err = nullptr;
+        return;
+    }
+
+    if (value == "true") {
         err = new Error{lvl::ERR, "Journal action is already reversed", action_node.GetPath()};
         return;
     }
 
     const std::string timestamp = CurrentIsoTimestampUTC();
-    XmlNode reversed = action_node.AddChild(
-        "<Reversed TimeStamp=\"" + timestamp + "\"/>"
-    );
-
-    if (reversed.err) {
-        err = reversed.err;
-        reversed.err = nullptr;
-    }
+    xmlSetProp(reversed[0].node, BAD_CAST "Value", BAD_CAST "true");
+    xmlSetProp(reversed[0].node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str());
 }
 
 void Action::ForwardStamp()
@@ -1430,11 +1461,8 @@ void Action::ForwardStamp()
         return;
     }
 
-    reversed[0].Delete();
-    if (reversed[0].err) {
-        err = reversed[0].err;
-        reversed[0].err = nullptr;
-    }
+    xmlSetProp(reversed[0].node, BAD_CAST "Value", BAD_CAST "false");
+    xmlUnsetProp(reversed[0].node, BAD_CAST "TimeStamp");
 }
 
 void ActionModify::Record()
@@ -1464,7 +1492,7 @@ void ActionModify::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed"))
+    if (action_node.XPath<bool>("./Reversed/@Value='true'"))
         return;
 
     if (jid.empty()) {
@@ -1581,7 +1609,7 @@ void ActionModify::Undo()
 
 void ActionModify::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -1679,7 +1707,7 @@ void ActionDelete::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed"))
+    if (action_node.XPath<bool>("./Reversed/@Value='true'"))
         return;
 
     if (jid.empty()) {
@@ -1803,7 +1831,7 @@ void ActionDelete::Undo()
 
 void ActionDelete::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -1884,7 +1912,7 @@ void ActionAdd::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed"))
+    if (action_node.XPath<bool>("./Reversed/@Value='true'"))
         return;
 
     if (jid.empty()) {
@@ -1952,7 +1980,7 @@ void ActionAdd::Undo()
 
 void ActionAdd::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -2155,7 +2183,7 @@ void ActionMove::Undo()
 
     const std::string journal_path = action_node.GetPath();
 
-    if (action_node.XPath<bool>("./Reversed"))
+    if (action_node.XPath<bool>("./Reversed/@Value='true'"))
         return;
 
     auto it = jrnl.jid_map.find(jid);
@@ -2167,8 +2195,10 @@ void ActionMove::Undo()
     XmlNode current(it->second);
 
     const std::string to_parent = action_node.XPath<std::string>("./To/Parent/@JID");
-    const std::string to_before = action_node.XPath<std::string>("./To/Before/@JID");
-    const std::string to_after = action_node.XPath<std::string>("./To/After/@JID");
+    const std::string to_before = action_node.XPath<bool>("./To/Before/@JID")
+        ? action_node.XPath<std::string>("./To/Before/@JID") : "";
+    const std::string to_after = action_node.XPath<bool>("./To/After/@JID")
+        ? action_node.XPath<std::string>("./To/After/@JID") : "";
 
     auto pit = jrnl.jid_map.find(to_parent);
     if (pit == jrnl.jid_map.end() || !pit->second) {
@@ -2197,8 +2227,10 @@ void ActionMove::Undo()
     }
 
     const std::string from_parent = action_node.XPath<std::string>("./From/Parent/@JID");
-    const std::string from_before = action_node.XPath<std::string>("./From/Before/@JID");
-    const std::string from_after = action_node.XPath<std::string>("./From/After/@JID");
+    const std::string from_before = action_node.XPath<bool>("./From/Before/@JID")
+        ? action_node.XPath<std::string>("./From/Before/@JID") : "";
+    const std::string from_after = action_node.XPath<bool>("./From/After/@JID")
+        ? action_node.XPath<std::string>("./From/After/@JID") : "";
 
     pit = jrnl.jid_map.find(from_parent);
     if (pit == jrnl.jid_map.end() || !pit->second) {
@@ -2259,7 +2291,7 @@ void ActionMove::Undo()
 
 void ActionMove::Redo()
 {
-    if (!action_node.node || !action_node.XPath<bool>("./Reversed[not(@Abandoned)]"))
+    if (!action_node.node || !action_node.XPath<bool>("./Reversed[@Value='true' and not(@Abandoned)]"))
         return;
 
     const std::string journal_path = action_node.GetPath();
@@ -2271,8 +2303,10 @@ void ActionMove::Redo()
 
     XmlNode current(it->second);
     const std::string from_parent = action_node.XPath<std::string>("./From/Parent/@JID");
-    const std::string from_before = action_node.XPath<std::string>("./From/Before/@JID");
-    const std::string from_after = action_node.XPath<std::string>("./From/After/@JID");
+    const std::string from_before = action_node.XPath<bool>("./From/Before/@JID")
+        ? action_node.XPath<std::string>("./From/Before/@JID") : "";
+    const std::string from_after = action_node.XPath<bool>("./From/After/@JID")
+        ? action_node.XPath<std::string>("./From/After/@JID") : "";
 
     auto pit = jrnl.jid_map.find(from_parent);
     if (pit == jrnl.jid_map.end() || !pit->second || current.node->parent != pit->second) {
@@ -2294,8 +2328,10 @@ void ActionMove::Redo()
     }
 
     const std::string to_parent = action_node.XPath<std::string>("./To/Parent/@JID");
-    const std::string to_before = action_node.XPath<std::string>("./To/Before/@JID");
-    const std::string to_after = action_node.XPath<std::string>("./To/After/@JID");
+    const std::string to_before = action_node.XPath<bool>("./To/Before/@JID")
+        ? action_node.XPath<std::string>("./To/Before/@JID") : "";
+    const std::string to_after = action_node.XPath<bool>("./To/After/@JID")
+        ? action_node.XPath<std::string>("./To/After/@JID") : "";
     pit = jrnl.jid_map.find(to_parent);
     if (pit == jrnl.jid_map.end() || !pit->second) {
         Conflict("Move destination parent is no longer available", action_node);

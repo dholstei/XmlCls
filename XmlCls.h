@@ -676,7 +676,7 @@ struct Action {
 
         /* A new edit abandons, but does not erase, the previous redo branch. */
         auto abandoned = jrnl.active_release.XPath<std::vector<XmlNode>>(
-            "./Change/Reversed[not(@Abandoned)]"
+            "./Change/Reversed[@Value='true' and not(@Abandoned)]"
         );
         if (jrnl.active_release.err) {
             err = jrnl.active_release.err;
@@ -689,6 +689,7 @@ struct Action {
             "\n<Change Type=\"" + type + "\""
             " TimeStamp=\"" + CurrentIsoTimestampUTC() + "\""
             " JID=\"" + jid + "\">"
+            "<Reversed Value=\"false\"/>"
             "</Change>\n";
 
         action_node = jrnl.active_release.AddChild(xml);
@@ -703,12 +704,10 @@ struct Action {
     }
 
 protected:
-    /**
-     * @brief Mark a successfully undone action by adding a Reversed timestamp.
-     */
+    /** Mark a successfully undone action as reversed and timestamp it. */
     void ReverseStamp();
 
-    /** Mark a successfully redone action as live by removing Reversed. */
+    /** Mark a successfully redone action live and remove its reverse timestamp. */
     void ForwardStamp();
 
     /**
