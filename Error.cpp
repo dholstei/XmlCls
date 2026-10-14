@@ -2,6 +2,11 @@
 
 #include <cstring>
 
+std::function<void(const Error&)> Error::Publisher = [](const Error& error) {
+    std::printf("%s: %s\nDATA: %s\n", LvlStr(error.level).c_str(),
+                error.msg.c_str(), error.data.c_str());
+};
+
 char* CError::Copy(const char* source)
 {
     if (!source)

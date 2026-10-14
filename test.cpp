@@ -519,7 +519,7 @@ void test_journal_undo_modify()
 
     CHECK_EQ( change.XPath<std::string>("@Type"), std::string("Modify") );
     CHECK_EQ( change.XPath<std::string>("@JID"), jid );
-    CHECK_EQ( change.XPath<std::string>("./Reversed/@Value"), std::string("false") );
+    CHECK(!change.XPath<bool>("./Reversed"));
 
     /*
      * Undo the specific Modify transaction.
@@ -551,7 +551,7 @@ void test_journal_undo_modify()
     /*
      * Journal transaction remains, but is marked reversed.
      */
-    CHECK_EQ( change.XPath<std::string>("./Reversed/@Value"), std::string("true") );
+    CHECK(change.XPath<bool>("./Reversed"));
 
     const std::string reversed_ts = change.XPath<std::string>("./Reversed/@TimeStamp");
 
@@ -685,7 +685,7 @@ void test_journal_delete()
     /*
      * New deletion transaction begins unreversed.
      */
-    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
+    CHECK(!change.XPath<bool>("./Reversed"));
 
     print_xml("source after journaled Delete(B)", doc);
     print_xml("journal after journaled Delete(B)", doc.JRNL);
@@ -737,7 +737,7 @@ void test_journal_undo_delete_middle()
     CHECK_EQ(restored.XPath<std::string>("@JID"), jid);
     CHECK(doc.JRNL->jid_map[jid] == restored.node);
 
-    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+    CHECK(change.XPath<bool>("./Reversed"));
 
     const std::string ts = change.XPath<std::string>("./Reversed/@TimeStamp");
     CHECK(!ts.empty());
@@ -913,8 +913,7 @@ void test_journal_undo_delete_parent_conflict()
     /*
      * Failed/conflicted undo must not mark the original action reversed.
      */
-    CHECK_EQ(b_change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
-    CHECK_EQ(b_change.XPath<std::string>("./Reversed/@TimeStamp"), std::string(""));
+    CHECK(!b_change.XPath<bool>("./Reversed"));
 
     std::remove(path);
 }
@@ -948,7 +947,7 @@ void test_journal_undo_add()
     CHECK(!doc.JRNL->err);
     CHECK_EQ(doc.XPath<int>("count(/Root/B)"), 0);
     CHECK(doc.JRNL->jid_map[jid] == nullptr);
-    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+    CHECK(change.XPath<bool>("./Reversed"));
 
     std::remove(path);
 }
@@ -1023,7 +1022,6 @@ void test_journal_build_jid_map_with_state()
         "  <Release Number=\"0\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
         "    <Release Number=\"1\" Open=\"2026-01-01T00:00:00Z\" Close=\"\">"
         "      <Change Type=\"Deletion\" JID=\"4444444444444444\" TimeStamp=\"2026-01-01T00:00:01Z\">"
-        "        <Reversed TimeStamp=\"\" Value=\"false\"/>"
         "      </Change>"
         "      <State Type=\"Save\" JID=\"3333333333333333\" TimeStamp=\"2026-01-01T00:00:02Z\"/>"
         "    </Release>"
@@ -1316,7 +1314,7 @@ void test_journal_move_before()
     CHECK_EQ(change.XPath<std::string>("./To/After/@JID"),
              doc.XPath<std::string>("/Root/B/@JID"));
 
-    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
+    CHECK(!change.XPath<bool>("./Reversed"));
 
     /*
      * Undo must restore the exact original sibling order.
@@ -1340,7 +1338,7 @@ void test_journal_move_before()
     CHECK(doc.JRNL->jid_map[d_jid] == restored_d.node);
     CHECK(restored_d.node == d.node);
 
-    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+    CHECK(change.XPath<bool>("./Reversed"));
 
     const std::string ts = change.XPath<std::string>("./Reversed/@TimeStamp");
     CHECK(!ts.empty());
@@ -1440,7 +1438,7 @@ void test_journal_move_after()
     CHECK_EQ(restored_a.XPath<std::string>("@JID"), a_jid);
     CHECK(restored_a.node == a.node);
     CHECK(doc.JRNL->jid_map[a_jid] == restored_a.node);
-    CHECK_EQ(change.XPath<std::string>("./Reversed/@Value"), std::string("true"));
+    CHECK(change.XPath<bool>("./Reversed"));
 
     std::remove(path);
 }
@@ -1773,8 +1771,7 @@ void test_journal_undo_move_conflict()
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("D"));
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("C"));
 
-    CHECK_EQ(move_change.XPath<std::string>("./Reversed/@Value"), std::string("false"));
-    CHECK_EQ(move_change.XPath<std::string>("./Reversed/@TimeStamp"), std::string(""));
+    CHECK(!move_change.XPath<bool>("./Reversed"));
 
     std::remove(path);
 }

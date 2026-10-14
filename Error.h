@@ -13,6 +13,13 @@ struct Error {
     std::string msg;
     std::string data;
 
+    /// Replace once to route errors to a GUI or another output destination.
+    static std::function<void(const Error&)> Publisher;
+    void Publish() const {
+        if (level > NOERR && Publisher)
+            Publisher(*this);
+    }
+
     /// Return an independently owned C representation of this error.
     CError* ToCError() const;
 };
@@ -50,13 +57,6 @@ inline std::string LvlStr(lvl level)
     }
 }
 
-inline std::function<void(const Error*)> g_handle_err_handler =
-    [](const Error* error) {
-        if (error && error->level > NOERR)
-            std::printf("%s: %s\nDATA: %s\n", LvlStr(error->level).c_str(),
-                        error->msg.c_str(), error->data.c_str());
-    };
-
 inline bool IsErr(const Error* error)
 {
     return error && error->level > NOERR;
@@ -67,7 +67,10 @@ inline std::string MsgErr(const Error* error)
     return error ? error->msg : "";
 }
 
-#define MSG_ERR(error) do { g_handle_err_handler(error); } while (0)
+#define MSG_ERR(error) do { \
+    const Error* error_ptr_ = (error); \
+    if (error_ptr_) error_ptr_->Publish(); \
+} while (0)
 
 // Foreign callers cannot invoke the C++ destructor directly.  Only the
 // exported function needs C linkage; CError itself does not have linkage.

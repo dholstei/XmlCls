@@ -676,7 +676,7 @@ struct Action {
 
         /* A new edit abandons, but does not erase, the previous redo branch. */
         auto abandoned = jrnl.active_release.XPath<std::vector<XmlNode>>(
-            "./Change/Reversed[@Value='true' and not(@Abandoned)]"
+            "./Change/Reversed[not(@Abandoned)]"
         );
         if (jrnl.active_release.err) {
             err = jrnl.active_release.err;
@@ -689,7 +689,6 @@ struct Action {
             "\n<Change Type=\"" + type + "\""
             " TimeStamp=\"" + CurrentIsoTimestampUTC() + "\""
             " JID=\"" + jid + "\">"
-            "<Reversed Value=\"false\"/>"
             "</Change>\n";
 
         action_node = jrnl.active_release.AddChild(xml);
