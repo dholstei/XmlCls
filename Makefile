@@ -9,8 +9,13 @@ else
 	LOGGER?=logger --tag "[$@: `date`]" -s 2>&1 | tee -a $(LOG)
 endif
 CXX=g++
-ifneq ($(SANITIZE),)
-DEBUG += -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer
+ifeq ($(SANITIZE),1)
+    DEBUG += -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer
+
+    DUMMY := $(shell echo 'SANITIZE enabled (ASan/LSan/UBSan)' | $(LOGGER) >&2)
+    DUMMY := $(shell echo 'Run: ASAN_OPTIONS=detect_leaks=1:malloc_context_size=12 LSAN_OPTIONS=report_objects=0 ./test' | $(LOGGER) >&2)
+else
+    DEBUG += -O2
 endif
 CXXFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings -fPIC
 
