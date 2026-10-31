@@ -9,9 +9,11 @@ enum lvl : int {NOERR, INFO, WARN, ERR};
 struct CError;
 
 struct Error {
-    lvl level;
-    std::string msg;
+    lvl level = NOERR;
+    std::string msg = "No error";
     std::string data;
+
+    explicit operator bool() const { return level != NOERR; }
 
     /// Replace once to route errors to a GUI or another output destination.
     static std::function<void(const Error&)> Publisher;
@@ -24,7 +26,6 @@ struct Error {
     CError* ToCError() const;
 };
 
-using ErrorPtr = Error*;
 
 /// Plain-layout error exposed across the shared-library boundary.
 struct CError {
@@ -57,19 +58,13 @@ inline std::string LvlStr(lvl level)
     }
 }
 
-inline bool IsErr(const Error* error)
-{
-    return error && error->level > NOERR;
-}
+inline bool IsErr(const Error& error) { return bool(error); }
 
-inline std::string MsgErr(const Error* error)
-{
-    return error ? error->msg : "";
-}
+inline std::string MsgErr(const Error& error) { return error ? error.msg : ""; }
 
 #define MSG_ERR(error) do { \
-    const Error* error_ptr_ = (error); \
-    if (error_ptr_) error_ptr_->Publish(); \
+    const Error& error_ref_ = (error); \
+    if (error_ref_) error_ref_.Publish(); \
 } while (0)
 
 // Foreign callers cannot invoke the C++ destructor directly.  Only the

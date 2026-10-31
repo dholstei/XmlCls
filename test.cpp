@@ -65,10 +65,10 @@ void fail(const char* expr, const char* file, int line)
         } \
     } while (0)
 
-void print_error(const char* where, ErrorPtr err)
+void print_error(const char* where, const Error& err)
 {
     if (!err) return;
-    std::cerr << where << ": " << err->msg << " [" << err->data << "]\n";
+    std::cerr << where << ": " << err.msg << " [" << err.data << "]\n";
 }
 
 void banner(const std::string& title)
@@ -898,11 +898,11 @@ void test_journal_undo_delete_parent_conflict()
      */
     doc.JRNL->Undo(b_change);
 
-    CHECK(doc.JRNL->err != nullptr);
+    CHECK(doc.JRNL->err);
 
     if (doc.JRNL->err) {
-        CHECK(doc.JRNL->err->level == lvl::INFO);
-        CHECK(doc.JRNL->err->msg.find("Conflict") != std::string::npos);
+        CHECK(doc.JRNL->err.level == lvl::INFO);
+        CHECK(doc.JRNL->err.msg.find("Conflict") != std::string::npos);
     }
 
     /*
@@ -1175,12 +1175,12 @@ void test_journal_state_validation()
         XmlDoc doc(dom_path);
 
         CHECK(doc.immutable);
-        CHECK(doc.err != nullptr);
+        CHECK(doc.err);
 
         if (doc.err) {
-            CHECK(doc.err->level == lvl::WARN);
-            CHECK(doc.err->msg.find("State") != std::string::npos ||
-                  doc.err->msg.find("STATE_JID") != std::string::npos);
+            CHECK(doc.err.level == lvl::WARN);
+            CHECK(doc.err.msg.find("State") != std::string::npos ||
+                  doc.err.msg.find("STATE_JID") != std::string::npos);
         }
 
         /*
@@ -1194,10 +1194,10 @@ void test_journal_state_validation()
         XmlNode a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
         a.parse("<A>should not happen</A>");
 
-        CHECK(a.err != nullptr);
+        CHECK(a.err);
 
         if (a.err)
-            CHECK(a.err->level == lvl::WARN);
+            CHECK(a.err.level == lvl::WARN);
 
         CHECK_EQ(doc.XPath<std::string>("/Root/A"), std::string("original"));
     }
@@ -1585,42 +1585,42 @@ void test_xmldoc_xpath_xmlnode()
     /*
      * No nodes.
      */
-    doc.err = nullptr;
+    doc.err = {};
 
     XmlNode none = doc.XPath<XmlNode>("/Root/C");
 
-    CHECK(doc.err != nullptr);
+    CHECK(doc.err);
     CHECK(none.node == nullptr);
 
     if (doc.err)
-        CHECK(doc.err->level == lvl::ERR);
+        CHECK(doc.err.level == lvl::ERR);
 
     /*
      * Multiple nodes: return the first, but report ambiguity.
      */
-    doc.err = nullptr;
+    doc.err = {};
 
     XmlNode first = doc.XPath<XmlNode>("/Root/A");
 
-    CHECK(doc.err != nullptr);
+    CHECK(doc.err);
     CHECK(first.node != nullptr);
     CHECK_EQ(first.XPath<std::string>("."), std::string("one"));
 
     if (doc.err)
-        CHECK(doc.err->level == lvl::WARN);
+        CHECK(doc.err.level == lvl::WARN);
 
     /*
      * Wrong result type.
      */
-    doc.err = nullptr;
+    doc.err = {};
 
     XmlNode wrong = doc.XPath<XmlNode>("count(/Root/A)");
 
-    CHECK(doc.err != nullptr);
+    CHECK(doc.err);
     CHECK(wrong.node == nullptr);
 
     if (doc.err)
-        CHECK(doc.err->level == lvl::ERR);
+        CHECK(doc.err.level == lvl::ERR);
 }
 
 void test_xmlnode_xpath_xmlnode()
@@ -1656,42 +1656,42 @@ void test_xmlnode_xpath_xmlnode()
     /*
      * No relative nodes.
      */
-    group.err = nullptr;
+    group.err = {};
 
     XmlNode none = group.XPath<XmlNode>("./C");
 
-    CHECK(group.err != nullptr);
+    CHECK(group.err);
     CHECK(none.node == nullptr);
 
     if (group.err)
-        CHECK(group.err->level == lvl::ERR);
+        CHECK(group.err.level == lvl::ERR);
 
     /*
      * Multiple relative nodes: return first + WARN.
      */
-    group.err = nullptr;
+    group.err = {};
 
     XmlNode first = group.XPath<XmlNode>("./A");
 
-    CHECK(group.err != nullptr);
+    CHECK(group.err);
     CHECK(first.node != nullptr);
     CHECK_EQ(first.XPath<std::string>("."), std::string("one"));
 
     if (group.err)
-        CHECK(group.err->level == lvl::WARN);
+        CHECK(group.err.level == lvl::WARN);
 
     /*
      * Wrong result type.
      */
-    group.err = nullptr;
+    group.err = {};
 
     XmlNode wrong = group.XPath<XmlNode>("count(./A)");
 
-    CHECK(group.err != nullptr);
+    CHECK(group.err);
     CHECK(wrong.node == nullptr);
 
     if (group.err)
-        CHECK(group.err->level == lvl::ERR);
+        CHECK(group.err.level == lvl::ERR);
 }
 
 void test_journal_undo_move_conflict()
@@ -1752,11 +1752,11 @@ void test_journal_undo_move_conflict()
      */
     doc.JRNL->Undo(move_change);
 
-    CHECK(doc.JRNL->err != nullptr);
+    CHECK(doc.JRNL->err);
 
     if (doc.JRNL->err) {
-        CHECK(doc.JRNL->err->level == lvl::INFO);
-        CHECK(doc.JRNL->err->msg.find("Conflict") != std::string::npos);
+        CHECK(doc.JRNL->err.level == lvl::INFO);
+        CHECK(doc.JRNL->err.msg.find("Conflict") != std::string::npos);
     }
 
     /*
@@ -1870,14 +1870,13 @@ void test_journal_archive()
     doc.JRNL->archiver = [&](std::string, std::string xml) {
         invoked = true;
         CHECK_EQ(xml, original);
-        doc.JRNL->err = new Error{lvl::ERR, "Archive deliberately rejected", "test"};
+        doc.JRNL->err = Error{lvl::ERR, "Archive deliberately rejected", "test"};
     };
     doc.JRNL->Archive();
     CHECK(invoked);
-    CHECK(doc.JRNL->err != nullptr);
+    CHECK(doc.JRNL->err);
     CHECK_EQ(doc.JRNL->XML(), original);
-    delete doc.JRNL->err;
-    doc.JRNL->err = nullptr;
+    doc.JRNL->err = {};
     std::string archived;
     doc.JRNL->archiver = [&](std::string, std::string xml) {
         archived = xml;
@@ -1885,8 +1884,14 @@ void test_journal_archive()
     doc.JRNL->Archive();
     CHECK(!doc.JRNL->err);
     CHECK_EQ(archived, original);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change)"), 1);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//State[@Type='Archive'])"), 1);
+    CHECK_EQ(doc.JRNL->XPath<std::string>("string((//State[@Type='Archive'])[last()]/@Note)").empty(), false);
+    doc.JRNL->Prune();
+    CHECK(!doc.JRNL->err);
     CHECK_EQ(doc.JRNL->XPath<int>("count(//Change)"), 0);
-    CHECK_EQ(doc.JRNL->XPath<std::string>("string(//State/@JID)"), committed);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//State[@Type='Archive'])"), 1);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//State[@Type='Prune'])"), 1);
     doc.JRNL->ValidateState();
     CHECK(!doc.JRNL->err);
     CHECK(!doc.immutable);

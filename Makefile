@@ -9,6 +9,9 @@ else
 	LOGGER?=logger --tag "[$@: `date`]" -s 2>&1 | tee -a $(LOG)
 endif
 CXX=g++
+ifneq ($(SANITIZE),)
+DEBUG += -g -O0 -fsanitize=address,undefined -fno-omit-frame-pointer
+endif
 CXXFLAGS=$(DEBUG) -std=c++17 -fpermissive -Wno-write-strings -fPIC
 
 INCLUDES:=-I/usr/include/libxml2
@@ -52,7 +55,7 @@ OBJECTS=
 		then echo "--- Compile $< $*.h: Success ---" | $(LOGGER) ;\
 		else echo "--- Compile $< $*.h: FAILURE! ---" | $(LOGGER) ; exit 1; fi
 
-libXmlCls.a:	XmlCls.o
+libXmlCls.a:	XmlCls.o Error.o
 	@if ar rcs $@ $^ && ranlib $@;\
 		then echo "--- Build $@: Success ---" | $(LOGGER) ;\
 		else echo "--- Build $@: FAILURE! ---" | $(LOGGER) ; exit 1; fi

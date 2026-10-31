@@ -5,7 +5,7 @@
  * XmlCls provides lightweight XmlDoc and XmlNode wrappers around libxml2.
  * Structural selection is expressed primarily with XPath while mutations are
  * performed through the wrapper methods.  Errors are reported explicitly
- * through Error pointers rather than exceptions.
+ * through Error values rather than exceptions.
  *
  * When journaling is enabled, XmlJrnl assigns persistent JIDs to logical XML
  * nodes and records Add, Modify, and Deletion actions that can subsequently be
@@ -34,12 +34,12 @@
  * @brief Explicit error/status state used by XmlCls operations.
  *
  * XmlCls does not throw exceptions for normal library failures.  Methods set an
- * Error pointer which callers are expected to inspect.  Journal conflicts that
+ * Error value which callers are expected to inspect.  Journal conflicts that
  * are valid consequences of prior transactions are reported at lvl::INFO rather
  * than as implementation errors.
  */
 #include "Error.h"
-typedef Error* ErrorPtr;
+
 #include "base64.h"
 
 class XmlJrnl;
@@ -76,7 +76,7 @@ class XmlDoc
 {
 
 public:
-    ErrorPtr err = nullptr;             ///< Last error/status reported by this wrapper.
+    Error err;                          ///< Last error/status reported by this wrapper.
     xmlXPathContextPtr ctxt = nullptr;  ///< Cached XPath context for this DOM.
     XmlJrnl* JRNL = nullptr;            ///< Optional mutation journal attached to this DOM.
     xmlDocPtr const doc;                ///< Immutable identity of the wrapped libxml2 DOM.
@@ -228,7 +228,7 @@ private:
 public:
     xmlDocPtr doc = nullptr;             ///< Parent libxml2 document.
     xmlNodePtr node = nullptr;           ///< Wrapped libxml2 node.
-    ErrorPtr err = nullptr;              ///< Last error/status reported by this wrapper.
+    Error err;                           ///< Last error/status reported by this wrapper.
     xmlXPathContextPtr ctxt = nullptr;   ///< Borrowed document XPath context.
     XmlJrnl* JRNL = nullptr;             ///< Journal attached to the owning XmlDoc, if any.
 
@@ -242,14 +242,14 @@ public:
     * inherits its journal association.
     */
     XmlNode(xmlNodePtr node) {
-        if (!node) { err = new Error{lvl::ERR, "Invalid/NULL node pointer", ""}; return; }
+        if (!node) { err = Error{lvl::ERR, "Invalid/NULL node pointer", ""}; return; }
         this->node = node;
         doc = node ? node->doc : nullptr;
 
         XmlDoc* owner =  doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
 
         if (owner) JRNL = owner->JRNL;
-        else { err = new Error{lvl::ERR, "Node has no associated document", ""}; }
+        else { err = Error{lvl::ERR, "Node has no associated document", ""}; }
     }
     ~XmlNode(){}
     
@@ -387,7 +387,7 @@ public:
      * the XPath context node.  This keeps XPath conversion, result validation,
      * and error messages centralized in XmlDoc::XPath<T>().
      *
-     * Any Error produced by the owning XmlDoc is transferred to this XmlNode and
+     * Any Error produced by the owning XmlDoc is copied to this XmlNode and
      * cleared from the owner so node-relative XPath failures do not leave the
      * document in an error state.
      *
@@ -400,14 +400,14 @@ public:
         XmlDoc* owner = doc ? static_cast<XmlDoc*>(doc->_private) : nullptr;
 
         if (!owner) {
-            err = new Error{lvl::ERR, "No DOM!", query};
+            err = Error{lvl::ERR, "No DOM!", query};
             return T{};
         }
 
         T ans = owner->XPath<T>(query, node);
 
         if (owner->err)
-            {err = owner->err; owner->err = nullptr;}
+            {err = owner->err; owner->err = {};}
 
         return ans;
     }
@@ -484,8 +484,11 @@ public:
     /// Store archive XML; report failure by setting this journal's err.
     std::function<void(std::string name, std::string XML)> archiver;
 
-    /// Archive the complete journal, then retain only its current State.
+    /// Archive the complete journal, then prune it only if archiving succeeds.
     void Archive();
+
+    /// Retain only the committed State and reset the active release hierarchy.
+    void Prune();
 
 
     /**
@@ -651,7 +654,7 @@ private:
 struct Action {
     XmlJrnl& jrnl;             ///< Journal/source context for this action.
     XmlNode action_node;       ///< Change node in the journal DOM.
-    Error* err = nullptr;      ///< Action-local error or INFO conflict status.
+    Error err;      ///< Action-local error or INFO conflict status.
 
     std::string type;          ///< Change Type attribute supplied by the specialization.
     std::string jid;           ///< Logical source-node JID supplied by the specialization.
@@ -678,7 +681,7 @@ struct Action {
     void Record()
     {
         if (type.empty() || jid.empty()) {
-            err = new Error{lvl::ERR, "Cannot record journal action: Type or JID is missing", ""};
+            err = Error{lvl::ERR, "Cannot record journal action: Type or JID is missing", ""};
             return;
         }
 
@@ -702,11 +705,11 @@ struct Action {
         action_node = jrnl.active_release.AddChild(xml);
 
         if (action_node.err)
-            { err = action_node.err; action_node.err = nullptr; return; }
+            { err = action_node.err; action_node.err = {}; return; }
 
         for (const auto& user : jrnl.user_xml) {
             action_node.AddChild(user);
-            if (action_node.err) { err = action_node.err; action_node.err = nullptr; return; }
+            if (action_node.err) { err = action_node.err; action_node.err = {}; return; }
         }
     }
 
@@ -727,7 +730,7 @@ protected:
      */
     void Conflict(const std::string& msg, XmlNode cause)
     {
-        err = new Error{lvl::INFO, "Conflict: " + msg, cause.node ? cause.GetPath() : action_node.GetPath()};
+        err = Error{lvl::INFO, "Conflict: " + msg, cause.node ? cause.GetPath() : action_node.GetPath()};
     }
 };
 

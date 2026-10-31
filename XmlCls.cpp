@@ -17,7 +17,7 @@
 #define XML_ERROR(T, data) \
     do { \
         xmlError e = *xmlGetLastError(); \
-        err = new Error{lvl::ERR, e.message, data}; \
+        err = Error{lvl::ERR, e.message, data}; \
         xmlResetLastError(); return T(); \
     } while(0)
 
@@ -25,21 +25,21 @@
     do {                                                                  \
         XmlDoc* owner = d ? static_cast<XmlDoc*>(d->_private) : nullptr;  \
         if (owner && owner->immutable) {                                  \
-            err = new Error{lvl::WARN, "Source DOM is immutable", std::string()}; \
+            err = Error{lvl::WARN, "Source DOM is immutable", std::string()}; \
             ret;                                                          \
         }                                                                 \
     } while (0)
 
-Error* SetXmlError(const std::string& context) {
-    Error* err = new Error();
+Error SetXmlError(const std::string& context) {
+    Error err;
     const xmlError* xerr = xmlGetLastError();
     if (xerr && xerr->message)
-        err->msg = xerr->message;
+        err.msg = xerr->message;
     else
-        err->msg = "Unknown libxml error";
+        err.msg = "Unknown libxml error";
 
-    err->level = ERR;
-    err->data = context;
+    err.level = ERR;
+    err.data = context;
     return err;
 }
 
@@ -59,19 +59,19 @@ std::string JournalPath(const XmlDoc& source, const char* filename)
 class FileLock
 {
 public:
-    Error* err = nullptr;
+    Error err;
 
     explicit FileLock(const char* filename)
     {
         lockfile = std::string(filename) + ".lock";
         fd = open(lockfile.c_str(), O_CREAT | O_RDWR, 0666);
         if (fd < 0) {
-            err = new Error{lvl::ERR, "Cannot open DOM lock file", lockfile};
+            err = Error{lvl::ERR, "Cannot open DOM lock file", lockfile};
             return;
         }
 
         if (flock(fd, LOCK_EX) != 0) {
-            err = new Error{lvl::ERR, "Cannot lock DOM", lockfile};
+            err = Error{lvl::ERR, "Cannot lock DOM", lockfile};
             close(fd);
             fd = -1;
         }
@@ -104,7 +104,7 @@ static std::string StateJID(xmlDocPtr doc)
     return jid;
 }
 
-static std::string FileStateJID(const char* filename, Error*& err)
+static std::string FileStateJID(const char* filename, Error& err)
 {
     xmlDocPtr disk = xmlReadFile(filename, NULL, XML_PARSE_NOBLANKS);
     if (!disk) {
@@ -117,17 +117,17 @@ static std::string FileStateJID(const char* filename, Error*& err)
     return jid;
 }
 
-static bool FlushFile(const char* filename, Error*& err)
+static bool FlushFile(const char* filename, Error& err)
 {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
-        err = new Error{lvl::ERR, "Cannot open saved XML for flush", filename};
+        err = Error{lvl::ERR, "Cannot open saved XML for flush", filename};
         return false;
     }
 
     if (fsync(fd) != 0) {
         close(fd);
-        err = new Error{lvl::ERR, "Cannot flush saved XML", filename};
+        err = Error{lvl::ERR, "Cannot flush saved XML", filename};
         return false;
     }
 
@@ -142,7 +142,7 @@ XmlDoc::XmlDoc(xmlDocPtr doc)
     : doc(doc)
 {
     if (!doc) {
-        err = new Error{lvl::ERR, "Cannot attach a NULL xmlDocPtr", ""};
+        err = Error{lvl::ERR, "Cannot attach a NULL xmlDocPtr", ""};
         return;
     }
     doc->_private = this;
@@ -154,7 +154,7 @@ XmlDoc::XmlDoc(const char *filename)
 {
     if (doc == NULL) { 
         xmlError e = *xmlGetLastError(); 
-        err = new Error{lvl::ERR, e.message, filename}; 
+        err = Error{lvl::ERR, e.message, filename}; 
         xmlResetLastError();
         return;
     }
@@ -168,7 +168,7 @@ XmlDoc::XmlDoc(const std::string content)
     if (doc == NULL)
     {
         xmlError e = *xmlGetLastError();
-        err = new Error{lvl::ERR, e.message, std::string(e.str1)};
+        err = Error{lvl::ERR, e.message, std::string(e.str1)};
         xmlResetLastError();
         return;
     }
@@ -211,12 +211,12 @@ void XmlDoc::Save(const char* filename) {
         const std::string state = StateJID(doc);
 
         if (access(filename, F_OK) == 0) {
-            Error* disk_err = nullptr;
+            Error disk_err;
             const std::string disk_state = FileStateJID(filename, disk_err);
             if (disk_err) { err = disk_err; return; }
 
             if (disk_state != state) {
-                err = new Error{
+                err = Error{
                     lvl::WARN,
                     "DOM has changed since it was opened",
                     filename
@@ -226,12 +226,12 @@ void XmlDoc::Save(const char* filename) {
         }
         else {
             if (errno != ENOENT) {
-                err = new Error{lvl::ERR, "Cannot inspect saved DOM", filename};
+                err = Error{lvl::ERR, "Cannot inspect saved DOM", filename};
                 return;
             }
 
             if (!state.empty()) {
-                err = new Error{lvl::WARN, "Saved DOM no longer exists", filename};
+                err = Error{lvl::WARN, "Saved DOM no longer exists", filename};
                 return;
             }
         }
@@ -243,15 +243,15 @@ void XmlDoc::Save(const char* filename) {
          * journal does not yet contain.
          */
         JRNL->StampState("Save", "");
-        if (JRNL->err) { err = JRNL->err; JRNL->err = nullptr; return; }
+        if (JRNL->err) { err = JRNL->err; JRNL->err = {}; return; }
 
         JRNL->Save();
-        if (JRNL->err) { err = JRNL->err; JRNL->err = nullptr; return; }
+        if (JRNL->err) { err = JRNL->err; JRNL->err = {}; return; }
 
         const char* journal_file = JRNL->doc && JRNL->doc->URL
             ? reinterpret_cast<const char*>(JRNL->doc->URL) : nullptr;
         if (!journal_file || !*journal_file) {
-            err = new Error{lvl::ERR, "Journal has no filename", filename};
+            err = Error{lvl::ERR, "Journal has no filename", filename};
             return;
         }
         if (!FlushFile(journal_file, err)) return;
@@ -276,7 +276,7 @@ void XmlDoc::Save(const char* filename) {
     }
 
     if (JRNL)
-        { JRNL->Save(); if (JRNL->err) { err = JRNL->err; JRNL->err = nullptr; } }
+        { JRNL->Save(); if (JRNL->err) { err = JRNL->err; JRNL->err = {}; } }
 }
 
 void XmlDoc::Save() {
@@ -322,13 +322,13 @@ void XmlDoc::OpenJournal(const char* filename)
 void XmlDoc::CreateJournal(const char* filename, std::string XML)
 {
     if (!filename || !*filename) {
-        err = new Error{lvl::ERR, "Cannot create journal: filename is empty", ""};
+        err = Error{lvl::ERR, "Cannot create journal: filename is empty", ""};
         return;
     }
 
     xmlNodePtr root = xmlDocGetRootElement(doc);
     if (!root || !xmlSetProp(root, BAD_CAST "JRNL", BAD_CAST filename)) {
-        err = new Error{lvl::ERR, "Cannot set source JRNL filename", ""};
+        err = Error{lvl::ERR, "Cannot set source JRNL filename", ""};
         return;
     }
 
@@ -392,14 +392,14 @@ std::string XmlDoc::XPath<std::string>(std::string query, xmlNodePtr node)
     {
         auto NL = result->nodesetval;
         if (!NL || NL->nodeNr != 1) {
-            err = new Error{lvl::ERR, "No single node, not compatible for \"std::string\" type", query};
+            err = Error{lvl::ERR, "No single node, not compatible for \"std::string\" type", query};
             xmlXPathFreeObject(result); return ans; }
         xmlXPathObjectPtr converted = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "string(.)", ctxt);
         xmlXPathFreeObject(result);
         result = converted;
 
         if (result->type != XPATH_STRING)
-            err = new Error{lvl::ERR, "Couldn't determine intermediate string for \"std::string\" type", query};
+            err = Error{lvl::ERR, "Couldn't determine intermediate string for \"std::string\" type", query};
 
         else ans = std::string((const char *)result->stringval);
     }
@@ -407,7 +407,7 @@ std::string XmlDoc::XPath<std::string>(std::string query, xmlNodePtr node)
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"string\"", query};
+        err = Error{lvl::ERR, "Result type is not \"string\"", query};
     }
     xmlXPathFreeObject(result);
     return ans;
@@ -426,8 +426,8 @@ double XmlDoc::XPath<double>(std::string query, xmlNodePtr node)
     double ans = 0.0;
     if (result->type == XPATH_NUMBER)
     {
-        if (xmlXPathIsNaN(result->floatval)) err = new Error{lvl::ERR, "Result is NaN!", query};
-        else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
+        if (xmlXPathIsNaN(result->floatval)) err = Error{lvl::ERR, "Result is NaN!", query};
+        else if (xmlXPathIsInf(result->floatval)) err = Error{lvl::ERR, "Result is infinite!", query};
         else ans = result->floatval;
     }
     
@@ -435,23 +435,23 @@ double XmlDoc::XPath<double>(std::string query, xmlNodePtr node)
     {
         auto NL = result->nodesetval;
         if (!NL || NL->nodeNr != 1) {
-            err = new Error{lvl::ERR, "No single node, not compatible for \"double\" type", query};
+            err = Error{lvl::ERR, "No single node, not compatible for \"double\" type", query};
             xmlXPathFreeObject(result); return ans; }
         xmlXPathObjectPtr converted = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "number(.)", ctxt);
         xmlXPathFreeObject(result);
         result = converted;
 
         if (result->type != XPATH_NUMBER) {
-            err = new Error{lvl::ERR, "Couldn't determine number for \"double\" type", query};
+            err = Error{lvl::ERR, "Couldn't determine number for \"double\" type", query};
             xmlXPathFreeObject(result); return ans; }
 
-        if (xmlXPathIsNaN(result->floatval)) err = new Error{lvl::ERR, "Result is NaN!", query};
-        else if (xmlXPathIsInf(result->floatval)) err = new Error{lvl::ERR, "Result is infinite!", query};
+        if (xmlXPathIsNaN(result->floatval)) err = Error{lvl::ERR, "Result is NaN!", query};
+        else if (xmlXPathIsInf(result->floatval)) err = Error{lvl::ERR, "Result is infinite!", query};
         else ans = result->floatval;
     }
 
     else
-        err = new Error{lvl::ERR, "Result type is not \"number\"!", query};
+        err = Error{lvl::ERR, "Result type is not \"number\"!", query};
     
     xmlXPathFreeObject(result);
     return ans;
@@ -463,7 +463,7 @@ int XmlDoc::XPath<int>(std::string query, xmlNodePtr node)
     double ans = XmlDoc::XPath<double>(query, node);
     if (err) return 0;
     if (ans != static_cast<int>(ans)) {
-        err = new Error{lvl::WARN, "Result is not an integer, truncating", query};
+        err = Error{lvl::WARN, "Result is not an integer, truncating", query};
     }
     
     return int(ans);
@@ -487,7 +487,7 @@ bool XmlDoc::XPath<bool>(std::string query, xmlNodePtr node)
         ans = result->nodesetval && result->nodesetval->nodeNr > 0;
 
     else
-        err = new Error{lvl::ERR, "Result type is not \"boolean!\"", query};
+        err = Error{lvl::ERR, "Result type is not \"boolean!\"", query};
         
     xmlXPathFreeObject(result);
     return ans;
@@ -519,7 +519,7 @@ std::vector<XmlNode> XmlDoc::XPath<std::vector<XmlNode>>(std::string query, xmlN
     else
     {
         xmlXPathFreeObject(result);
-        err = new Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
+        err = Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
     }
     return std::vector<XmlNode>();
 }
@@ -538,26 +538,26 @@ XmlNode XmlDoc::XPath<XmlNode>(std::string query, xmlNodePtr node)
     if (result->type == XPATH_NODESET)
     {
         if (!result->nodesetval) {
-            err = new Error{lvl::ERR, "Result is NULL!", query};
+            err = Error{lvl::ERR, "Result is NULL!", query};
         }
 
         else switch (result->nodesetval->nodeNr)
         {
             case 0:
-                err = new Error{lvl::ERR, "Result is NULL!", query};
+                err = Error{lvl::ERR, "Result is NULL!", query};
                 break;
             case 1:
                 ans = XmlNode(result->nodesetval->nodeTab[0]);
                 break;
             default:
                 ans = XmlNode(result->nodesetval->nodeTab[0]);
-                err = new Error{lvl::WARN, "Result is ambiguous, not a single node!", query};
+                err = Error{lvl::WARN, "Result is ambiguous, not a single node!", query};
                 break;
         }
     }
     else
     {
-        err = new Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
+        err = Error{lvl::ERR, "Result type is not \"nodelist/resultset\"!", query};
     }
     xmlXPathFreeObject(result);
     return ans;
@@ -570,7 +570,7 @@ xmlXPathContextPtr XmlDoc::XPathContext()
         ctxt = xmlXPathNewContext(doc);
         if (ctxt == NULL)
         {
-            err = new Error{lvl::ERR, "Fatal error on XPath context", doc->URL ? (char *)doc->URL : "unknown"};
+            err = Error{lvl::ERR, "Fatal error on XPath context", doc->URL ? (char *)doc->URL : "unknown"};
             return nullptr;
         }
         return ctxt;
@@ -637,7 +637,7 @@ void XmlNode::parse(std::string XML)
     xmlFreeDoc(tempDoc);
 
     if (!imported) {
-        err = new Error{lvl::ERR, "Could not copy node into target XML document", XML.substr(0, 200)};
+        err = Error{lvl::ERR, "Could not copy node into target XML document", XML.substr(0, 200)};
         return;
     }
 
@@ -657,10 +657,10 @@ void XmlNode::parse(std::string XML)
         this->JID(jid);
 }
 
-static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDoc, ErrorPtr& err)
+static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDoc, Error& err)
 {
     if (!ownerDoc) {
-        err = new Error{lvl::ERR, "Node is not attached to an XML document", XmlStr.substr(0, 200)};
+        err = Error{lvl::ERR, "Node is not attached to an XML document", XmlStr.substr(0, 200)};
         return nullptr;
     }
 
@@ -673,7 +673,7 @@ static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDo
     xmlNodePtr parsedRoot = xmlDocGetRootElement(tempDoc);
     if (!parsedRoot) {
         xmlFreeDoc(tempDoc);
-        err = new Error{lvl::ERR, "Could not extract root node from XML", XmlStr.substr(0, 200)};
+        err = Error{lvl::ERR, "Could not extract root node from XML", XmlStr.substr(0, 200)};
         return nullptr;
     }
 
@@ -681,7 +681,7 @@ static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDo
     xmlFreeDoc(tempDoc);
 
     if (!imported) {
-        err = new Error{lvl::ERR, "Could not copy node into target XML document", XmlStr.substr(0, 200)};
+        err = Error{lvl::ERR, "Could not copy node into target XML document", XmlStr.substr(0, 200)};
         return nullptr;
     }
 
@@ -692,7 +692,7 @@ template<typename Pos>
 XmlNode XmlNode::Add(Pos pos, std::string XmlStr)
 {
     if (!pos.destination.node || !pos.destination.doc) {
-        err = new Error{lvl::ERR, "Cannot Add: invalid destination", XmlStr.substr(0, 200)};
+        err = Error{lvl::ERR, "Cannot Add: invalid destination", XmlStr.substr(0, 200)};
         return XmlNode();
     }
 
@@ -706,7 +706,7 @@ XmlNode XmlNode::Add(Pos pos, std::string XmlStr)
 
     if (!added) {
         xmlFreeNode(imported);
-        err = new Error{lvl::ERR, "Cannot Add: XML placement failed", XmlStr.substr(0, 200)};
+        err = Error{lvl::ERR, "Cannot Add: XML placement failed", XmlStr.substr(0, 200)};
         return XmlNode();
     }
 
@@ -747,19 +747,19 @@ template<typename Pos>
 void XmlNode::Move(Pos pos)
 {
     if (!node || !node->doc) {
-        err = new Error{lvl::ERR, "Cannot Move: invalid source XmlNode", ""};
+        err = Error{lvl::ERR, "Cannot Move: invalid source XmlNode", ""};
         return;
     }
 
     MUTABLE_CHECK(node->doc, return);
 
     if (!pos.destination.node || !pos.destination.doc) {
-        err = new Error{lvl::ERR, "Cannot Move: invalid destination", GetPath()};
+        err = Error{lvl::ERR, "Cannot Move: invalid destination", GetPath()};
         return;
     }
 
     if (node->doc != pos.destination.doc) {
-        err = new Error{lvl::ERR, "Cannot Move: destination must belong to the same DOM", GetPath()};
+        err = Error{lvl::ERR, "Cannot Move: destination must belong to the same DOM", GetPath()};
         return;
     }
 
@@ -779,7 +779,7 @@ void XmlNode::Move(Pos pos)
     if (!JRNL) {
         xmlUnlinkNode(node);
         if (!pos.Place(node))
-            err = new Error{lvl::ERR, "Cannot Move: XML insertion failed", GetPath()};
+            err = Error{lvl::ERR, "Cannot Move: XML insertion failed", GetPath()};
         return;
     }
 
@@ -789,7 +789,7 @@ void XmlNode::Move(Pos pos)
     xmlUnlinkNode(node);
 
     if (!pos.Place(node)) {
-        err = new Error{lvl::ERR, "Cannot Move: XML insertion failed", GetPath()};
+        err = Error{lvl::ERR, "Cannot Move: XML insertion failed", GetPath()};
         return;
     }
 
@@ -829,14 +829,14 @@ std::string XmlNode::JID()
     }
 
     if (!JRNL) {
-        err = new Error{ lvl::ERR, "Cannot create JID: node is not associated with a journal", GetPath() };
+        err = Error{ lvl::ERR, "Cannot create JID: node is not associated with a journal", GetPath() };
         return {};
     }
 
     std::string jid = JRNL->JID();
 
     if (!xmlSetProp(node, BAD_CAST "JID", BAD_CAST jid.c_str())) {
-        err = new Error{ lvl::ERR, "Unable to assign JID", GetPath() };
+        err = Error{ lvl::ERR, "Unable to assign JID", GetPath() };
         return {};
     }
 
@@ -851,12 +851,12 @@ void XmlNode::JID(std::string jid)
         return;
 
     if (!JRNL) {
-        err = new Error{ lvl::ERR, "Cannot set JID: XmlNode is not associated with a journal", GetPath() };
+        err = Error{ lvl::ERR, "Cannot set JID: XmlNode is not associated with a journal", GetPath() };
         return;
     }
 
     if (!xmlSetProp(node, BAD_CAST "JID", BAD_CAST jid.c_str())) {
-        err = new Error{ lvl::ERR, "Unable to set JID \"" + jid + "\"", GetPath() };
+        err = Error{ lvl::ERR, "Unable to set JID \"" + jid + "\"", GetPath() };
         return;
     }
 
@@ -904,20 +904,20 @@ void XmlNode::Delete()
 #define JRNL_CHECK_NODE(N)                                              \
     do {                                                                \
         if (!(N).node || !(N).doc) {                                    \
-            err = new Error{lvl::ERR, "Invalid XmlNode", std::string()};\
+            err = Error{lvl::ERR, "Invalid XmlNode", std::string()};\
             return;                                                     \
         }                                                               \
         XmlDoc* owner = static_cast<XmlDoc*>((N).doc->_private);        \
         if (!owner) {                                                   \
-            err = new Error{lvl::ERR, "XmlNode has no canonical XmlDoc", (N).GetPath()}; \
+            err = Error{lvl::ERR, "XmlNode has no canonical XmlDoc", (N).GetPath()}; \
             return;                                                     \
         }                                                               \
         if (owner->immutable) {                                         \
-            err = new Error{lvl::WARN, "XmlNode is immutable due to DOM state", std::string()}; \
+            err = Error{lvl::WARN, "XmlNode is immutable due to DOM state", std::string()}; \
             return;                                                     \
         }                                                               \
         if ((N).doc != source_doc.doc) {                                \
-            err = new Error{lvl::ERR, "XmlNode does not belong to this journal's source DOM", (N).GetPath()}; \
+            err = Error{lvl::ERR, "XmlNode does not belong to this journal's source DOM", (N).GetPath()}; \
             return;                                                     \
         }                                                               \
     } while (0)
@@ -952,56 +952,26 @@ void XmlJrnl::Archive()
 {
     if (err) return;
     if (!doc || !source_doc.doc || source_doc.immutable) {
-        err = new Error{lvl::ERR, "Cannot archive invalid or immutable journal", ""};
+        err = Error{lvl::ERR, "Cannot archive invalid or immutable journal", ""};
         return;
     }
     const char* path = doc->URL ? reinterpret_cast<const char*>(doc->URL) : nullptr;
     if (!path || !*path) {
-        err = new Error{lvl::ERR, "Cannot archive journal without filename", ""};
+        err = Error{lvl::ERR, "Cannot archive journal without filename", ""};
         return;
     }
 
-    // Keep the source's committed state, not an arbitrary later journal state.
-    const std::string state = StateJID(source_doc.doc);
-    xmlNodePtr saved_state = nullptr;
-    if (!state.empty()) {
-        auto states = XPath<std::vector<XmlNode>>("//State[@JID='" + state + "']");
-        if (err) return;
-        if (states.size() != 1) {
-            err = new Error{lvl::ERR, "Cannot archive: source STATE_JID is not unique in journal", state};
-            return;
-        }
-        saved_state = states[0].node;
-    }
-
-    // Prepare the replacement before invoking the irreversible archive callback.
-    xmlNodePtr root = xmlNewNode(nullptr, BAD_CAST "JRNL");
-    xmlNodePtr release0 = xmlNewChild(root, nullptr, BAD_CAST "Release", nullptr);
-    xmlNodePtr release1 = release0 ? xmlNewChild(release0, nullptr, BAD_CAST "Release", nullptr) : nullptr;
-    const std::string now = CurrentIsoTimestampUTC();
-    if (!root || !release0 || !release1 ||
-        !xmlSetProp(release0, BAD_CAST "Number", BAD_CAST "0") ||
-        !xmlSetProp(release0, BAD_CAST "Open", BAD_CAST now.c_str()) ||
-        !xmlSetProp(release0, BAD_CAST "Close", BAD_CAST "") ||
-        !xmlSetProp(release1, BAD_CAST "Number", BAD_CAST "1") ||
-        !xmlSetProp(release1, BAD_CAST "Open", BAD_CAST now.c_str()) ||
-        !xmlSetProp(release1, BAD_CAST "Close", BAD_CAST "") ||
-        (saved_state && !xmlAddChild(release1, xmlCopyNode(saved_state, 1)))) {
-        if (root) xmlFreeNode(root);
-        err = new Error{lvl::ERR, "Cannot construct pruned journal", path};
-        return;
-    }
-
+    // Back up the existing journal without changing or pruning it first.
     const std::string original = XML();
+    const std::string now = CurrentIsoTimestampUTC();
     std::string name = std::string(path) + ".archive." + now;
     for (char& ch : name) if (ch == ':') ch = '-';
 
-    // Storage policy belongs to the caller; failures are reported through err.
     if (!archiver) archiver = [this](std::string name, std::string xml) {
         std::string temp = name + ".tmp";
         FILE* f = fopen(temp.c_str(), "wb");
         if (!f) {
-            err = new Error{lvl::ERR, "Cannot create journal archive", name};
+            err = Error{lvl::ERR, "Cannot create journal archive", name};
             return;
         }
         bool ok = fwrite(xml.data(), 1, xml.size(), f) == xml.size();
@@ -1011,12 +981,76 @@ void XmlJrnl::Archive()
         if (ok) ok = rename(temp.c_str(), name.c_str()) == 0;
         if (!ok) {
             std::remove(temp.c_str());
-            err = new Error{lvl::ERR, "Cannot store journal archive", name};
+            err = Error{lvl::ERR, "Cannot store journal archive", name};
         }
     };
     archiver(name, original);
-    if (err) {
-        xmlFreeNode(root);
+    if (err) return;
+
+    // Note identifies the artifact. XmlDoc::Save commits the new state.
+    const std::string committed = StateJID(source_doc.doc);
+    if (StampState("Archive", name).empty()) return;
+    // Save() checks the on-disk committed token before stamping its own state.
+    xmlSetProp(xmlDocGetRootElement(source_doc.doc), BAD_CAST "STATE_JID", BAD_CAST committed.c_str());
+    source_doc.Save();
+    if (source_doc.err) err = source_doc.err;
+}
+
+void XmlJrnl::Prune()
+{
+    if (err) return;
+    if (!doc || !source_doc.doc || source_doc.immutable) {
+        err = Error{lvl::ERR, "Cannot prune invalid or immutable journal", ""};
+        return;
+    }
+    const char* path = doc->URL ? reinterpret_cast<const char*>(doc->URL) : nullptr;
+    if (!path || !*path) {
+        err = Error{lvl::ERR, "Cannot prune journal without filename", ""};
+        return;
+    }
+
+    // Preserve the committed checkpoint and the most recent archive record.
+    const std::string committed = StateJID(source_doc.doc);
+    xmlNodePtr saved_state = nullptr;
+    if (!committed.empty()) {
+        auto states = XPath<std::vector<XmlNode>>("//State[@JID='" + committed + "']");
+        if (err) return;
+        if (states.size() != 1) {
+            err = Error{lvl::ERR, "Cannot prune: source STATE_JID is not unique in journal", committed};
+            return;
+        }
+        saved_state = states[0].node;
+    }
+    auto archives = XPath<std::vector<XmlNode>>("(//State[@Type='Archive'])[last()]");
+    if (err) return;
+    xmlNodePtr last_archive = archives.empty() ? nullptr : archives[0].node;
+
+    // Stamp a distinct Prune state before constructing the replacement DOM.
+    const std::string prune_jid = StampState("Prune", "");
+    if (prune_jid.empty()) return;
+    auto prunes = XPath<std::vector<XmlNode>>("//State[@JID='" + prune_jid + "']");
+    if (err || prunes.size() != 1) return;
+
+    xmlNodePtr root = xmlNewNode(nullptr, BAD_CAST "JRNL");
+    xmlNodePtr release0 = root ? xmlNewChild(root, nullptr, BAD_CAST "Release", nullptr) : nullptr;
+    xmlNodePtr release1 = release0 ? xmlNewChild(release0, nullptr, BAD_CAST "Release", nullptr) : nullptr;
+    const std::string now = CurrentIsoTimestampUTC();
+    bool ok = root && release0 && release1 &&
+        xmlSetProp(release0, BAD_CAST "Number", BAD_CAST "0") &&
+        xmlSetProp(release0, BAD_CAST "Open", BAD_CAST now.c_str()) &&
+        xmlSetProp(release0, BAD_CAST "Close", BAD_CAST "") &&
+        xmlSetProp(release1, BAD_CAST "Number", BAD_CAST "1") &&
+        xmlSetProp(release1, BAD_CAST "Open", BAD_CAST now.c_str()) &&
+        xmlSetProp(release1, BAD_CAST "Close", BAD_CAST "");
+
+    // Avoid duplicating a state when the last archive is also the checkpoint.
+    if (ok && saved_state) ok = xmlAddChild(release1, xmlCopyNode(saved_state, 1)) != nullptr;
+    if (ok && last_archive && last_archive != saved_state)
+        ok = xmlAddChild(release1, xmlCopyNode(last_archive, 1)) != nullptr;
+    if (ok) ok = xmlAddChild(release1, xmlCopyNode(prunes[0].node, 1)) != nullptr;
+    if (!ok) {
+        if (root) xmlFreeNode(root);
+        err = Error{lvl::ERR, "Cannot construct pruned journal", path};
         return;
     }
 
@@ -1031,6 +1065,10 @@ void XmlJrnl::Archive()
     if (ctxt) { xmlXPathFreeContext(ctxt); ctxt = nullptr; }
     RefreshActiveRelease();
     if (!err) BuildJIDMap();
+    if (err) return;
+    xmlSetProp(xmlDocGetRootElement(source_doc.doc), BAD_CAST "STATE_JID", BAD_CAST committed.c_str());
+    source_doc.Save();
+    if (source_doc.err) err = source_doc.err;
 }
 
 void XmlJrnl::LogAdd(XmlNode& node)
@@ -1070,7 +1108,7 @@ void XmlJrnl::Undo()
 {
     MUTABLE_CHECK(source_doc.doc, return);
     if (!active_release.node) {
-        err = new Error{ lvl::ERR, "Cannot undo: journal has no active release", "" };
+        err = Error{ lvl::ERR, "Cannot undo: journal has no active release", "" };
         return;
     }
 
@@ -1091,7 +1129,7 @@ void XmlJrnl::Undo(XmlNode action_node)
 {
     MUTABLE_CHECK(source_doc.doc, return);
     if (!action_node.node) {
-        err = new Error{lvl::ERR, "Cannot undo: invalid journal action node", ""};
+        err = Error{lvl::ERR, "Cannot undo: invalid journal action node", ""};
         return;
     }
 
@@ -1130,7 +1168,7 @@ void XmlJrnl::Undo(XmlNode action_node)
         if (action.err) err = action.err;
         return;
     }
-    err = new Error{lvl::ERR, "Undo currently implemented only for Modify transactions", action_node.GetPath()};
+    err = Error{lvl::ERR, "Undo currently implemented only for Modify transactions", action_node.GetPath()};
 }
 
 void XmlJrnl::Undo(std::vector<XmlNode> action_nodes) {
@@ -1145,7 +1183,7 @@ void XmlJrnl::Redo()
 {
     MUTABLE_CHECK(source_doc.doc, return);
     if (!active_release.node) {
-        err = new Error{lvl::ERR, "Cannot redo: journal has no active release", ""};
+        err = Error{lvl::ERR, "Cannot redo: journal has no active release", ""};
         return;
     }
 
@@ -1167,7 +1205,7 @@ void XmlJrnl::Redo(XmlNode action_node)
 {
     MUTABLE_CHECK(source_doc.doc, return);
     if (!action_node.node) {
-        err = new Error{lvl::ERR, "Cannot redo: invalid journal action node", ""};
+        err = Error{lvl::ERR, "Cannot redo: invalid journal action node", ""};
         return;
     }
 
@@ -1201,7 +1239,7 @@ void XmlJrnl::Redo(XmlNode action_node)
         return;
     }
 
-    err = new Error{lvl::ERR, "Unsupported journal transaction type for Redo", action_node.GetPath()};
+    err = Error{lvl::ERR, "Unsupported journal transaction type for Redo", action_node.GetPath()};
 }
 void XmlJrnl::RefreshActiveRelease()
 {
@@ -1210,7 +1248,7 @@ void XmlJrnl::RefreshActiveRelease()
 
     auto roots = XPath<std::vector<XmlNode>>("/JRNL/Release[@Close='']");
     if (roots.empty()) {
-        err = new Error{lvl::ERR, "No open root Release in journal", ""};
+        err = Error{lvl::ERR, "No open root Release in journal", ""};
         return;
     }
 
@@ -1246,7 +1284,7 @@ void XmlJrnl::BuildJIDMap()
         auto [it, inserted] = jid_map.emplace(jid, n.node->parent);
 
         if (!inserted) {
-            err = new Error{lvl::ERR, "Duplicate JID \"" + jid + "\"", n.GetPath()};
+            err = Error{lvl::ERR, "Duplicate JID \"" + jid + "\"", n.GetPath()};
             return;
         }
     }
@@ -1281,7 +1319,7 @@ void XmlJrnl::BuildJIDMap()
         std::string name = owner.XPath<std::string>("name(.)");
 
         if (name == "State") {
-            err = new Error{lvl::ERR, "State JID \"" + jid + "\" duplicates an existing JID", n.GetPath()};
+            err = Error{lvl::ERR, "State JID \"" + jid + "\" duplicates an existing JID", n.GetPath()};
             return;
         }
     }
@@ -1311,18 +1349,18 @@ std::string XmlJrnl::JID()
 std::string XmlJrnl::StampState(std::string type, std::string note)
 {
     if (!active_release.node) {
-        err = new Error{lvl::ERR, "Cannot stamp state: journal has no active release", ""};
+        err = Error{lvl::ERR, "Cannot stamp state: journal has no active release", ""};
         return {};
     }
 
     if (type.empty()) {
-        err = new Error{lvl::ERR, "Cannot stamp state: Type is empty", active_release.GetPath()};
+        err = Error{lvl::ERR, "Cannot stamp state: Type is empty", active_release.GetPath()};
         return {};
     }
 
     xmlNodePtr root = xmlDocGetRootElement(source_doc.doc);
     if (!root) {
-        err = new Error{lvl::ERR, "Cannot stamp state: source document has no document element", ""};
+        err = Error{lvl::ERR, "Cannot stamp state: source document has no document element", ""};
         return {};
     }
     const std::string jid = JID();
@@ -1338,12 +1376,12 @@ std::string XmlJrnl::StampState(std::string type, std::string note)
     if (!xmlSetProp(state.node, BAD_CAST "Type", BAD_CAST type.c_str()) ||
         !xmlSetProp(state.node, BAD_CAST "JID", BAD_CAST jid.c_str()) ||
         !xmlSetProp(state.node, BAD_CAST "TimeStamp", BAD_CAST timestamp.c_str())) {
-        err = new Error{lvl::ERR, "Cannot stamp state: unable to set State attributes", state.GetPath()};
+        err = Error{lvl::ERR, "Cannot stamp state: unable to set State attributes", state.GetPath()};
         return {};
     }
 
     if (!note.empty() && !xmlSetProp(state.node, BAD_CAST "Note", BAD_CAST note.c_str())) {
-        err = new Error{lvl::ERR, "Cannot stamp state: unable to set Note", state.GetPath()};
+        err = Error{lvl::ERR, "Cannot stamp state: unable to set Note", state.GetPath()};
         return {};
     }
 
@@ -1354,7 +1392,7 @@ std::string XmlJrnl::StampState(std::string type, std::string note)
     jid_map[jid] = nullptr;
 
     if (!xmlSetProp(root, BAD_CAST "STATE_JID", BAD_CAST jid.c_str())) {
-        err = new Error{lvl::ERR, "Cannot stamp state: unable to set source STATE_JID", ""};
+        err = Error{lvl::ERR, "Cannot stamp state: unable to set source STATE_JID", ""};
         return {};
     }
 
@@ -1364,13 +1402,13 @@ std::string XmlJrnl::StampState(std::string type, std::string note)
 void XmlJrnl::MarkRelease(std::string note)
 {
     if (!active_release.node) {
-        err = new Error{lvl::ERR, "Cannot mark release: journal has no active release", ""};
+        err = Error{lvl::ERR, "Cannot mark release: journal has no active release", ""};
         return;
     }
 
     auto parents = active_release.XPath<std::vector<XmlNode>>("..");
     if (parents.size() != 1) {
-        err = new Error{lvl::ERR, "Cannot mark release: active release has no parent", active_release.GetPath()};
+        err = Error{lvl::ERR, "Cannot mark release: active release has no parent", active_release.GetPath()};
         return;
     }
 
@@ -1381,7 +1419,7 @@ void XmlJrnl::MarkRelease(std::string note)
 
     const std::string timestamp = CurrentIsoTimestampUTC();
     if (!xmlSetProp(active_release.node, BAD_CAST "Close", BAD_CAST timestamp.c_str())) {
-        err = new Error{lvl::ERR, "Cannot mark release: unable to close active release", active_release.GetPath()};
+        err = Error{lvl::ERR, "Cannot mark release: unable to close active release", active_release.GetPath()};
         return;
     }
 
@@ -1392,13 +1430,13 @@ void XmlJrnl::MarkRelease(std::string note)
         !xmlSetProp(release, BAD_CAST "Close", BAD_CAST "") ||
         (!note.empty() && !xmlSetProp(release, BAD_CAST "Note", BAD_CAST note.c_str()))) {
         if (release) xmlFreeNode(release);
-        err = new Error{lvl::ERR, "Cannot mark release: unable to create release entry", ""};
+        err = Error{lvl::ERR, "Cannot mark release: unable to create release entry", ""};
         return;
     }
 
     if (!xmlAddNextSibling(active_release.node, release)) {
         xmlFreeNode(release);
-        err = new Error{lvl::ERR, "Cannot mark release: unable to place release entry", active_release.GetPath()};
+        err = Error{lvl::ERR, "Cannot mark release: unable to place release entry", active_release.GetPath()};
         return;
     }
 
@@ -1420,7 +1458,7 @@ void XmlJrnl::Restore(std::string jid)
     }
 
     if (!restore_point.node) {
-        err = new Error{lvl::ERR, "Cannot restore: restore-point JID was not found", jid};
+        err = Error{lvl::ERR, "Cannot restore: restore-point JID was not found", jid};
         return;
     }
 
@@ -1447,7 +1485,7 @@ void XmlJrnl::ValidateState()
     }
 
     if (source_state.empty()) {
-        err = new Error{lvl::WARN, "JRNL-controlled DOM has no STATE_JID", ""};
+        err = Error{lvl::WARN, "JRNL-controlled DOM has no STATE_JID", ""};
         source_doc.immutable = true;
         return;
     }
@@ -1460,7 +1498,7 @@ void XmlJrnl::ValidateState()
     }
 
     if (states.empty()) {
-        err = new Error{lvl::WARN, "Journal does not contain DOM STATE_JID \"" + source_state + "\"", source_doc.doc->URL ? (char*)source_doc.doc->URL : ""};
+        err = Error{lvl::WARN, "Journal does not contain DOM STATE_JID \"" + source_state + "\"", source_doc.doc->URL ? (char*)source_doc.doc->URL : ""};
         source_doc.immutable = true;
         return;
     }
@@ -1468,7 +1506,7 @@ void XmlJrnl::ValidateState()
     auto latest = XPath<std::vector<XmlNode>>("(//State)[last()]");
 
     if (latest.empty()) {
-        err = new Error{lvl::WARN, "Journal contains no State records", ""};
+        err = Error{lvl::WARN, "Journal contains no State records", ""};
         source_doc.immutable = true;
         return;
     }
@@ -1476,7 +1514,7 @@ void XmlJrnl::ValidateState()
     const std::string latest_jid = latest[0].XPath<std::string>("@JID");
 
     if (latest_jid != source_state) {
-        err = new Error{lvl::WARN, "DOM STATE_JID does not match latest journal State", latest[0].GetPath()};
+        err = Error{lvl::WARN, "DOM STATE_JID does not match latest journal State", latest[0].GetPath()};
         source_doc.immutable = true;
         return;
     }
@@ -1515,7 +1553,7 @@ ActionModify::ActionModify(XmlJrnl& j, XmlNode action)
 void Action::ReverseStamp()
 {
     if (action_node.XPath<bool>("./Reversed")) {
-        err = new Error{lvl::ERR, "Journal action is already reversed", action_node.GetPath()};
+        err = Error{lvl::ERR, "Journal action is already reversed", action_node.GetPath()};
         return;
     }
 
@@ -1525,7 +1563,7 @@ void Action::ReverseStamp()
     );
     if (reversed.err) {
         err = reversed.err;
-        reversed.err = nullptr;
+        reversed.err = {};
     }
 }
 
@@ -1534,14 +1572,14 @@ void Action::ForwardStamp()
     auto reversed = action_node.XPath<std::vector<XmlNode>>("./Reversed");
 
     if (reversed.size() != 1) {
-        err = new Error{lvl::ERR, "Journal action contains invalid Reversed state", action_node.GetPath()};
+        err = Error{lvl::ERR, "Journal action contains invalid Reversed state", action_node.GetPath()};
         return;
     }
 
     reversed[0].Delete();
     if (reversed[0].err) {
         err = reversed[0].err;
-        reversed[0].err = nullptr;
+        reversed[0].err = {};
     }
 }
 
@@ -1566,7 +1604,7 @@ void ActionModify::Record()
 void ActionModify::Undo()
 {
     if (!action_node.node) {
-        err = new Error{lvl::ERR, "Cannot undo Modify: invalid journal action node", ""};
+        err = Error{lvl::ERR, "Cannot undo Modify: invalid journal action node", ""};
         return;
     }
 
@@ -1576,7 +1614,7 @@ void ActionModify::Undo()
         return;
 
     if (jid.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Modify: journal transaction has no JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Modify: journal transaction has no JID", journal_path};
         return;
     }
 
@@ -1586,7 +1624,7 @@ void ActionModify::Undo()
     const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
 
     if (parent_jid.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Modify: journal transaction has no Parent JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Modify: journal transaction has no Parent JID", journal_path};
         return;
     }
 
@@ -1598,7 +1636,7 @@ void ActionModify::Undo()
         if (!causes.empty())
             Conflict("parent node is no longer available", causes.back());
         else
-            err = new Error{lvl::ERR, "Cannot undo Modify: parent JID \"" + parent_jid + "\" is not present in the source DOM", journal_path};
+            err = Error{lvl::ERR, "Cannot undo Modify: parent JID \"" + parent_jid + "\" is not present in the source DOM", journal_path};
 
         return;
     }
@@ -1611,7 +1649,7 @@ void ActionModify::Undo()
         if (!causes.empty())
             Conflict("modified node is no longer available", causes.back());
         else
-            err = new Error{lvl::ERR, "Cannot undo Modify: JID \"" + jid + "\" is not present in the source DOM", journal_path};
+            err = Error{lvl::ERR, "Cannot undo Modify: JID \"" + jid + "\" is not present in the source DOM", journal_path};
 
         return;
     }
@@ -1619,7 +1657,7 @@ void ActionModify::Undo()
     xmlNodePtr current = it->second;
 
     if (current->doc != jrnl.source_doc.doc) {
-        err = new Error{lvl::ERR, "Cannot undo Modify: JID \"" + jid + "\" belongs to an incompatible DOM", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Modify: JID \"" + jid + "\" belongs to an incompatible DOM", journal_path};
         return;
     }
 
@@ -1629,7 +1667,7 @@ void ActionModify::Undo()
     const std::string encoded = action_node.XPath<std::string>("./Node");
 
     if (encoded.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Modify: journal contains no previous node state", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Modify: journal contains no previous node state", journal_path};
         return;
     }
 
@@ -1638,9 +1676,9 @@ void ActionModify::Undo()
 
     if (!restored) {
         if (err)
-            err->data = journal_path;
+            err.data = journal_path;
         else
-            err = new Error{lvl::ERR, "Cannot undo Modify: saved XML cannot be restored", journal_path};
+            err = Error{lvl::ERR, "Cannot undo Modify: saved XML cannot be restored", journal_path};
 
         return;
     }
@@ -1653,7 +1691,7 @@ void ActionModify::Undo()
 
     if (restored_jid != jid) {
         xmlFreeNode(restored);
-        err = new Error{lvl::ERR, "Cannot undo Modify: saved node JID does not match transaction JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Modify: saved node JID does not match transaction JID", journal_path};
         return;
     }
 
@@ -1673,7 +1711,7 @@ void ActionModify::Undo()
 
     if (replaced != current) {
         xmlFreeNode(restored);
-        err = new Error{lvl::ERR, "Cannot undo Modify: xmlReplaceNode failed", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Modify: xmlReplaceNode failed", journal_path};
         return;
     }
 
@@ -1701,27 +1739,27 @@ void ActionModify::Redo()
 
     const std::string encoded = action_node.XPath<std::string>("./Redo");
     if (encoded.empty()) {
-        err = new Error{lvl::ERR, "Cannot redo Modify: journal contains no forward node state", journal_path};
+        err = Error{lvl::ERR, "Cannot redo Modify: journal contains no forward node state", journal_path};
         return;
     }
 
     xmlNodePtr current = it->second;
     xmlNodePtr replacement = XmlNodeFromString(base64_decode(encoded), jrnl.source_doc.doc, err);
     if (!replacement) {
-        if (err) err->data = journal_path;
+        if (err) err.data = journal_path;
         return;
     }
 
     if (XmlNode(replacement).XPath<std::string>("@JID") != jid) {
         xmlFreeNode(replacement);
-        err = new Error{lvl::ERR, "Cannot redo Modify: saved node JID does not match transaction JID", journal_path};
+        err = Error{lvl::ERR, "Cannot redo Modify: saved node JID does not match transaction JID", journal_path};
         return;
     }
 
     xmlNodePtr replaced = xmlReplaceNode(current, replacement);
     if (replaced != current) {
         xmlFreeNode(replacement);
-        err = new Error{lvl::ERR, "Cannot redo Modify: xmlReplaceNode failed", journal_path};
+        err = Error{lvl::ERR, "Cannot redo Modify: xmlReplaceNode failed", journal_path};
         return;
     }
 
@@ -1781,7 +1819,7 @@ void ActionDelete::Record()
 void ActionDelete::Undo()
 {
     if (!action_node.node) {
-        err = new Error{lvl::ERR, "Cannot undo Deletion: invalid journal action node", ""};
+        err = Error{lvl::ERR, "Cannot undo Deletion: invalid journal action node", ""};
         return;
     }
 
@@ -1791,13 +1829,13 @@ void ActionDelete::Undo()
         return;
 
     if (jid.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Deletion: journal transaction has no JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Deletion: journal transaction has no JID", journal_path};
         return;
     }
 
     const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
     if (parent_jid.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Deletion: journal transaction has no Parent JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Deletion: journal transaction has no Parent JID", journal_path};
         return;
     }
 
@@ -1862,7 +1900,7 @@ void ActionDelete::Undo()
     const std::string encoded = action_node.XPath<std::string>("./Node");
 
     if (encoded.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Deletion: journal contains no deleted node", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Deletion: journal contains no deleted node", journal_path};
         return;
     }
 
@@ -1870,8 +1908,8 @@ void ActionDelete::Undo()
     xmlNodePtr restored = XmlNodeFromString(oldXML, jrnl.source_doc.doc, err);
 
     if (!restored) {
-        if (err) err->data = journal_path;
-        else err = new Error{lvl::ERR, "Cannot undo Deletion: saved XML cannot be restored", journal_path};
+        if (err) err.data = journal_path;
+        else err = Error{lvl::ERR, "Cannot undo Deletion: saved XML cannot be restored", journal_path};
         return;
     }
 
@@ -1879,7 +1917,7 @@ void ActionDelete::Undo()
 
     if (restored_node.XPath<std::string>("@JID") != jid) {
         xmlFreeNode(restored);
-        err = new Error{lvl::ERR, "Cannot undo Deletion: saved node JID does not match transaction JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Deletion: saved node JID does not match transaction JID", journal_path};
         return;
     }
 
@@ -1894,7 +1932,7 @@ void ActionDelete::Undo()
 
     if (!inserted) {
         xmlFreeNode(restored);
-        err = new Error{lvl::ERR, "Cannot undo Deletion: node could not be restored", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Deletion: node could not be restored", journal_path};
         return;
     }
 
@@ -1986,7 +2024,7 @@ void ActionAdd::Record()
 void ActionAdd::Undo()
 {
     if (!action_node.node) {
-        err = new Error{lvl::ERR, "Cannot undo Add: invalid journal action node", ""};
+        err = Error{lvl::ERR, "Cannot undo Add: invalid journal action node", ""};
         return;
     }
 
@@ -1996,14 +2034,14 @@ void ActionAdd::Undo()
         return;
 
     if (jid.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Add: journal transaction has no JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Add: journal transaction has no JID", journal_path};
         return;
     }
 
     const std::string parent_jid = action_node.XPath<std::string>("./Parent/@JID");
 
     if (parent_jid.empty()) {
-        err = new Error{lvl::ERR, "Cannot undo Add: journal transaction has no Parent JID", journal_path};
+        err = Error{lvl::ERR, "Cannot undo Add: journal transaction has no Parent JID", journal_path};
         return;
     }
 
@@ -2114,18 +2152,18 @@ void ActionAdd::Redo()
 
     const std::string encoded = action_node.XPath<std::string>("./Node");
     if (encoded.empty()) {
-        err = new Error{lvl::ERR, "Cannot redo Add: journal contains no added node", journal_path};
+        err = Error{lvl::ERR, "Cannot redo Add: journal contains no added node", journal_path};
         return;
     }
 
     xmlNodePtr restored = XmlNodeFromString(base64_decode(encoded), jrnl.source_doc.doc, err);
     if (!restored) {
-        if (err) err->data = journal_path;
+        if (err) err.data = journal_path;
         return;
     }
     if (XmlNode(restored).XPath<std::string>("@JID") != jid) {
         xmlFreeNode(restored);
-        err = new Error{lvl::ERR, "Cannot redo Add: saved node JID does not match transaction JID", journal_path};
+        err = Error{lvl::ERR, "Cannot redo Add: saved node JID does not match transaction JID", journal_path};
         return;
     }
 
@@ -2134,7 +2172,7 @@ void ActionAdd::Redo()
                                      : xmlAddChild(parent.node, restored);
     if (!inserted) {
         xmlFreeNode(restored);
-        err = new Error{lvl::ERR, "Cannot redo Add: node could not be restored", journal_path};
+        err = Error{lvl::ERR, "Cannot redo Add: node could not be restored", journal_path};
         return;
     }
 
@@ -2154,7 +2192,7 @@ ActionMove::ActionMove(XmlJrnl& j, XmlNode n) : Action(j), node(n)
 
     auto parents = node.XPath<std::vector<XmlNode>>("..");
     if (parents.size() != 1) {
-        err = new Error{lvl::ERR, "Cannot Move: node has no parent", node.GetPath()};
+        err = Error{lvl::ERR, "Cannot Move: node has no parent", node.GetPath()};
         return;
     }
 
@@ -2193,7 +2231,7 @@ void ActionMove::Record()
 
     auto parents = node.XPath<std::vector<XmlNode>>("..");
     if (parents.size() != 1) {
-        err = new Error{lvl::ERR, "Cannot record Move: node has no destination parent", node.GetPath()};
+        err = Error{lvl::ERR, "Cannot record Move: node has no destination parent", node.GetPath()};
         return;
     }
 
@@ -2257,7 +2295,7 @@ void ActionMove::Record()
 void ActionMove::Undo()
 {
     if (!action_node.node) {
-        err = new Error{lvl::ERR, "Cannot undo Move: invalid journal action node", ""};
+        err = Error{lvl::ERR, "Cannot undo Move: invalid journal action node", ""};
         return;
     }
 
@@ -2331,7 +2369,7 @@ void ActionMove::Undo()
         xmlUnlinkNode(current.node);
 
         if (!xmlAddNextSibling(bit->second, current.node)) {
-            err = new Error{lvl::ERR, "Cannot undo Move: xmlAddNextSibling failed", journal_path};
+            err = Error{lvl::ERR, "Cannot undo Move: xmlAddNextSibling failed", journal_path};
             return;
         }
     }
@@ -2346,7 +2384,7 @@ void ActionMove::Undo()
         xmlUnlinkNode(current.node);
 
         if (!xmlAddPrevSibling(ait->second, current.node)) {
-            err = new Error{lvl::ERR, "Cannot undo Move: xmlAddPrevSibling failed", journal_path};
+            err = Error{lvl::ERR, "Cannot undo Move: xmlAddPrevSibling failed", journal_path};
             return;
         }
     }
@@ -2361,7 +2399,7 @@ void ActionMove::Undo()
         xmlUnlinkNode(current.node);
 
         if (!xmlAddChild(parent, current.node)) {
-            err = new Error{lvl::ERR, "Cannot undo Move: xmlAddChild failed", journal_path};
+            err = Error{lvl::ERR, "Cannot undo Move: xmlAddChild failed", journal_path};
             return;
         }
     }
@@ -2427,7 +2465,7 @@ void ActionMove::Redo()
         }
         xmlUnlinkNode(current.node);
         if (!xmlAddNextSibling(bit->second, current.node)) {
-            err = new Error{lvl::ERR, "Cannot redo Move: xmlAddNextSibling failed", journal_path};
+            err = Error{lvl::ERR, "Cannot redo Move: xmlAddNextSibling failed", journal_path};
             return;
         }
     }
@@ -2439,7 +2477,7 @@ void ActionMove::Redo()
         }
         xmlUnlinkNode(current.node);
         if (!xmlAddPrevSibling(ait->second, current.node)) {
-            err = new Error{lvl::ERR, "Cannot redo Move: xmlAddPrevSibling failed", journal_path};
+            err = Error{lvl::ERR, "Cannot redo Move: xmlAddPrevSibling failed", journal_path};
             return;
         }
     }
@@ -2451,7 +2489,7 @@ void ActionMove::Redo()
         }
         xmlUnlinkNode(current.node);
         if (!xmlAddChild(parent, current.node)) {
-            err = new Error{lvl::ERR, "Cannot redo Move: xmlAddChild failed", journal_path};
+            err = Error{lvl::ERR, "Cannot redo Move: xmlAddChild failed", journal_path};
             return;
         }
     }
