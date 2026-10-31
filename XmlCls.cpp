@@ -2,6 +2,8 @@
 #include "base64.h"
 
 #include <cerrno>
+#include <cstdio>
+#include <cstring>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
@@ -367,7 +369,7 @@ void XmlDoc::clear() {
     }
     if (doc) {
         if (JRNL) { JRNL->Save(); delete JRNL; JRNL = nullptr; }
-        // xmlFreeDoc(doc);
+        xmlFreeDoc(doc);
         // doc = nullptr;
     }
 }
@@ -392,7 +394,9 @@ std::string XmlDoc::XPath<std::string>(std::string query, xmlNodePtr node)
         if (!NL || NL->nodeNr != 1) {
             err = new Error{lvl::ERR, "No single node, not compatible for \"std::string\" type", query};
             xmlXPathFreeObject(result); return ans; }
-        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "string(.)", ctxt);
+        xmlXPathObjectPtr converted = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "string(.)", ctxt);
+        xmlXPathFreeObject(result);
+        result = converted;
 
         if (result->type != XPATH_STRING)
             err = new Error{lvl::ERR, "Couldn't determine intermediate string for \"std::string\" type", query};
@@ -433,7 +437,9 @@ double XmlDoc::XPath<double>(std::string query, xmlNodePtr node)
         if (!NL || NL->nodeNr != 1) {
             err = new Error{lvl::ERR, "No single node, not compatible for \"double\" type", query};
             xmlXPathFreeObject(result); return ans; }
-        result = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "number(.)", ctxt);
+        xmlXPathObjectPtr converted = xmlXPathNodeEval(NL->nodeTab[0], (const xmlChar*) "number(.)", ctxt);
+        xmlXPathFreeObject(result);
+        result = converted;
 
         if (result->type != XPATH_NUMBER) {
             err = new Error{lvl::ERR, "Couldn't determine number for \"double\" type", query};
@@ -940,6 +946,91 @@ XmlJrnl::XmlJrnl(XmlDoc& source, const std::string content) : XmlDoc(content), s
     BuildJIDMap();
     if (err)
         { source.immutable = true; return; }
+}
+
+void XmlJrnl::Archive()
+{
+    if (err) return;
+    if (!doc || !source_doc.doc || source_doc.immutable) {
+        err = new Error{lvl::ERR, "Cannot archive invalid or immutable journal", ""};
+        return;
+    }
+    const char* path = doc->URL ? reinterpret_cast<const char*>(doc->URL) : nullptr;
+    if (!path || !*path) {
+        err = new Error{lvl::ERR, "Cannot archive journal without filename", ""};
+        return;
+    }
+
+    // Keep the source's committed state, not an arbitrary later journal state.
+    const std::string state = StateJID(source_doc.doc);
+    xmlNodePtr saved_state = nullptr;
+    if (!state.empty()) {
+        auto states = XPath<std::vector<XmlNode>>("//State[@JID='" + state + "']");
+        if (err) return;
+        if (states.size() != 1) {
+            err = new Error{lvl::ERR, "Cannot archive: source STATE_JID is not unique in journal", state};
+            return;
+        }
+        saved_state = states[0].node;
+    }
+
+    // Prepare the replacement before invoking the irreversible archive callback.
+    xmlNodePtr root = xmlNewNode(nullptr, BAD_CAST "JRNL");
+    xmlNodePtr release0 = xmlNewChild(root, nullptr, BAD_CAST "Release", nullptr);
+    xmlNodePtr release1 = release0 ? xmlNewChild(release0, nullptr, BAD_CAST "Release", nullptr) : nullptr;
+    const std::string now = CurrentIsoTimestampUTC();
+    if (!root || !release0 || !release1 ||
+        !xmlSetProp(release0, BAD_CAST "Number", BAD_CAST "0") ||
+        !xmlSetProp(release0, BAD_CAST "Open", BAD_CAST now.c_str()) ||
+        !xmlSetProp(release0, BAD_CAST "Close", BAD_CAST "") ||
+        !xmlSetProp(release1, BAD_CAST "Number", BAD_CAST "1") ||
+        !xmlSetProp(release1, BAD_CAST "Open", BAD_CAST now.c_str()) ||
+        !xmlSetProp(release1, BAD_CAST "Close", BAD_CAST "") ||
+        (saved_state && !xmlAddChild(release1, xmlCopyNode(saved_state, 1)))) {
+        if (root) xmlFreeNode(root);
+        err = new Error{lvl::ERR, "Cannot construct pruned journal", path};
+        return;
+    }
+
+    const std::string original = XML();
+    std::string name = std::string(path) + ".archive." + now;
+    for (char& ch : name) if (ch == ':') ch = '-';
+
+    // Storage policy belongs to the caller; failures are reported through err.
+    if (!archiver) archiver = [this](std::string name, std::string xml) {
+        std::string temp = name + ".tmp";
+        FILE* f = fopen(temp.c_str(), "wb");
+        if (!f) {
+            err = new Error{lvl::ERR, "Cannot create journal archive", name};
+            return;
+        }
+        bool ok = fwrite(xml.data(), 1, xml.size(), f) == xml.size();
+        if (ok) ok = fflush(f) == 0;
+        if (ok) ok = fsync(fileno(f)) == 0;
+        if (fclose(f) != 0) ok = false;
+        if (ok) ok = rename(temp.c_str(), name.c_str()) == 0;
+        if (!ok) {
+            std::remove(temp.c_str());
+            err = new Error{lvl::ERR, "Cannot store journal archive", name};
+        }
+    };
+    archiver(name, original);
+    if (err) {
+        xmlFreeNode(root);
+        return;
+    }
+
+    xmlNodePtr old_root = xmlDocSetRootElement(doc, root);
+    Save();
+    if (err) {
+        xmlNodePtr failed_root = xmlDocSetRootElement(doc, old_root);
+        if (failed_root) xmlFreeNode(failed_root);
+        return;
+    }
+    if (old_root) xmlFreeNode(old_root);
+    if (ctxt) { xmlXPathFreeContext(ctxt); ctxt = nullptr; }
+    RefreshActiveRelease();
+    if (!err) BuildJIDMap();
 }
 
 void XmlJrnl::LogAdd(XmlNode& node)

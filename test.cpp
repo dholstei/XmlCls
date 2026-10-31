@@ -1050,6 +1050,9 @@ void test_journal_state_validation()
     const char* dom_path = "/tmp/xmlcls_state_validation.xml";
     const char* jrnl_path = "/tmp/xmlcls_state_validation.jrnl.xml";
 
+    std::remove(dom_path);
+    std::remove(jrnl_path);
+
     std::string state_jid;
 
     /*
@@ -1115,25 +1118,18 @@ void test_journal_state_validation()
     }
 
     /*
-     * The C ABI and Python bind through XmlDoc(xmlDocPtr), so exercise that
-     * construction path separately from XmlDoc(filename).
+     * Reopen the saved DOM through the public XmlCls interface.
+     * Document construction, journal attachment, and cleanup
+     * are entirely the responsibility of XmlDoc.
      */
     {
-        xmlDocPtr raw = xmlReadFile(dom_path, nullptr, XML_PARSE_NOBLANKS);
-        CHECK(raw != nullptr);
+        XmlDoc attached(dom_path);
 
-        if (raw) {
-            {
-                XmlDoc attached(raw);
-                CHECK(attached.JRNL != nullptr);
-                CHECK(!attached.err);
-                CHECK(!attached.immutable);
+        CHECK(attached.JRNL != nullptr);
+        CHECK(!attached.err);
+        CHECK(!attached.immutable);
 
-                /* raw is caller-owned; prevent a dangling owner after detach. */
-                raw->_private = nullptr;
-            }
-            xmlFreeDoc(raw);
-        }
+        CHECK_EQ(attached.XPath<std::string>("/*/@STATE_JID"), state_jid);
     }
 
     /*
@@ -1851,6 +1847,58 @@ void test_journal_redo()
     std::remove(path);
 }
 
+void test_journal_archive()
+{
+    banner("XmlJrnl::Archive");
+    const char* source_path = "/tmp/xmlcls_archive_source.xml";
+    const char* journal_path = "/tmp/xmlcls_archive_journal.xml";
+    std::remove(source_path);
+    std::remove(journal_path);
+    XmlDoc doc(std::string("<Root><A/></Root>"));
+    doc.CreateJournal(journal_path);
+    CHECK(!doc.err && doc.JRNL);
+    if (!doc.JRNL) return;
+    auto root = doc.XPath<std::vector<XmlNode>>("/Root")[0];
+    auto added = root.AddChild("<B/>");
+    CHECK(!added.err);
+    doc.Save(source_path);
+    CHECK(!doc.err);
+    const std::string committed = doc.XPath<std::string>("string(/Root/@STATE_JID)");
+    const std::string original = doc.JRNL->XML();
+    CHECK(!committed.empty());
+    bool invoked = false;
+    doc.JRNL->archiver = [&](std::string, std::string xml) {
+        invoked = true;
+        CHECK_EQ(xml, original);
+        doc.JRNL->err = new Error{lvl::ERR, "Archive deliberately rejected", "test"};
+    };
+    doc.JRNL->Archive();
+    CHECK(invoked);
+    CHECK(doc.JRNL->err != nullptr);
+    CHECK_EQ(doc.JRNL->XML(), original);
+    delete doc.JRNL->err;
+    doc.JRNL->err = nullptr;
+    std::string archived;
+    doc.JRNL->archiver = [&](std::string, std::string xml) {
+        archived = xml;
+    };
+    doc.JRNL->Archive();
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(archived, original);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change)"), 0);
+    CHECK_EQ(doc.JRNL->XPath<std::string>("string(//State/@JID)"), committed);
+    doc.JRNL->ValidateState();
+    CHECK(!doc.JRNL->err);
+    CHECK(!doc.immutable);
+    auto next = root.AddChild("<C/>");
+    CHECK(!next.err);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change)"), 1);
+    doc.Save(source_path);
+    CHECK(!doc.err);
+    std::remove(source_path);
+    std::remove(journal_path);
+}
+
 } // namespace
 
 int main()
@@ -1886,6 +1934,7 @@ int main()
     test_xmlnode_xpath_xmlnode();
     test_journal_undo_move_conflict();
     test_journal_redo();
+    test_journal_archive();
     
     xmlCleanupParser();
 

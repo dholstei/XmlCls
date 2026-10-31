@@ -24,6 +24,7 @@
 #include <random>
 #include <cstdint>
 #include <optional>
+#include <functional>
 #include <algorithm>
 
 #include "string.h"
@@ -479,6 +480,13 @@ public:
     /// Application-defined XML fragments appended as children of each journal entry.
     /// Examples: <user>...</user>, <email>...</email>, <signature ...>...</signature>.
     std::vector<std::string> user_xml;
+
+    /// Store archive XML; report failure by setting this journal's err.
+    std::function<void(std::string name, std::string XML)> archiver;
+
+    /// Archive the complete journal, then retain only its current State.
+    void Archive();
+
 
     /**
      * @brief Open an existing journal for a canonical source document.
