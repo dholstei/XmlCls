@@ -190,6 +190,8 @@ void XmlJrnl_Redo(void* journal);
 void XmlJrnl_MarkRelease(void* journal, const char* note);
 const char* XmlJrnl_StampState(void* journal, const char* type, const char* note);
 void XmlJrnl_Restore(void* journal, const char* jid);
+void XmlJrnl_Archive(void* journal);
+void XmlJrnl_Prune(void* journal);
 ```
 
 `XmlNode_GetPath()` is a thin wrapper around `XmlNode::GetPath()`. The editor
