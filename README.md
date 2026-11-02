@@ -43,8 +43,9 @@ python3 -m pip install PyQt6
 ### Explicit Error Handling
 
 `XmlCls` does not use exceptions for normal library failures. Operations report
-status through an `Error` pointer containing a severity level, message, and
-optional diagnostic data.
+status through an `Error` value containing a severity level, message, and
+optional diagnostic data. C++ objects expose this value as `err`; no heap-owned
+`Error*` is required for ordinary error propagation.
 
 Journal conflicts are deliberately distinguished from implementation failures.
 An undo that cannot be applied because of a later, incompatible journal
@@ -210,10 +211,12 @@ struct Error {
 
 The C facade preserves the same information in its C-compatible `CError`
 representation. Errors produced by a C++ `XmlDoc` or `XmlNode` operation are
-transferred to the corresponding thread-local C error channel and retrieved
-with `XmlDoc_Error()` or `XmlNode_Error()`. Python immediately copies the
-severity, message, and diagnostic data into a Python-owned `CError` before the
-C allocation is released.
+moved by value into the corresponding thread-local C error channel and retrieved
+with `XmlDoc_Error()` or `XmlNode_Error()`. These channels own their `Error`
+values, not pointers to temporary or embedded objects. Each retrieval converts
+the stored value to an independently allocated `CError` and clears the channel.
+Python copies its severity, message, and diagnostic data into a Python-owned
+`Error` object, then calls `FreeCError()` to release the C allocation.
 
 Consequently, the same diagnostic information follows an operation through the
 entire stack:
@@ -223,9 +226,11 @@ XmlDoc / XmlNode / XmlJrnl
         ↓
       Error
         ↓
- XmlClsLib.so CError
+ XmlClsLib.so thread-local Error
         ↓
- Python CError
+   allocated CError
+        ↓
+   Python Error
         ↓
  XmlClsEdit ErrorPopup
 ```
@@ -234,7 +239,8 @@ The adapters do not invent a second success/failure convention. C++ `void`
 operations such as `XmlNode::Delete()`, `parse()`, and the Move methods remain
 void-style operations in Python; the caller invokes the method and then
 inspects the object's `err`. Methods such as `AddChild()` that return an
-`XmlNode` carry their error on the returned node, matching the C++ API.
+`XmlNode` report failures through the corresponding `err` channel; the Python
+adapter propagates the retrieved error to its owning document.
 
 Strings returned by the C facade are borrowed thread-local strings and must be
 copied by callers that need to retain them across subsequent interface calls.
@@ -252,7 +258,7 @@ Run the editor with an optional XML filename:
 
 ```bash
 python3 XmlClsEdit.py
-python3 XmlClsEdit.py Config.xml
+python3 XmlClsEdit.py PonziCoin.xml
 ```
 
 Between the menu bar and XML tree, the editor provides an XPath navigation
@@ -266,21 +272,6 @@ as `N/M` (for example, `3/7`). Navigation wraps at either end of the result set.
 A query with no matching nodes displays `0/0`. While navigating a result set,
 the manually entered XPath remains in the field rather than being replaced by
 the structural path of each selected result.
-
-The tree also retains the standard Qt `QTreeView` keyboard navigation:
-
-- **Up / Down** – move to the previous or next visible item.
-- **Left / Right** – collapse or expand the current item.
-- **- / +** – collapse or expand the current item.
-- **\*** – expand the current item and all of its descendants.
-- **Home / End** – move to the first or last visible item.
-- **Page Up / Page Down** – move through the tree by viewport pages.
-- **F2** – open the editor's Direct XML editor for the current node.
-
-Except for **F2**, which is connected to `Edit → Direct...`, these navigation
-keys are standard `QTreeView` behavior and require no editor-specific key
-handling. **View → Collapse All** and **View → Expand All** remain available
-for whole-tree operations.
 
 The menus provide:
 
@@ -335,19 +326,49 @@ XML needed for Redo when first undone; Delete and Move reuse their recorded
 identity and structural anchors. Recording a new mutation after Undo preserves
 the abandoned history but marks that branch non-redoable.
 
+### Journal Archiving and Pruning
+
+`XmlJrnl::Archive()` and `XmlJrnl::Prune()` are separate operations: archiving
+preserves the complete journal history in an external file; pruning replaces
+the active journal with a compact checkpoint. **Archive does not prune.**
+
+`Archive()` requires a valid, mutable source document and a named journal file.
+It serializes the complete journal *before* adding an Archive state and writes
+that snapshot to `<journal filename>.archive.<UTC timestamp>` (colons in the
+timestamp are replaced with hyphens). The default `archiver` callback writes a
+`.tmp` file, flushes and syncs it, then renames it to the archive filename.
+Applications may supply an alternative `archiver` callback. After a successful
+archive, `Archive()` stamps an `Archive` state containing the archive filename
+and calls `source_doc.Save()` to commit the updated state and journal. Failures
+are reported through `err`.
+
+`Prune()` requires a valid, mutable source document and a named journal file.
+It retains the source document's committed `STATE_JID` checkpoint, the latest
+`Archive` state (if distinct), and a newly stamped `Prune` state. It constructs
+a replacement journal with a fresh `JRNL/Release[@Number='0']/Release[@Number='1']`
+structure, saves it, rebuilds the active release and JID map, and saves the
+source document. Earlier journal changes and release history are discarded from
+the active journal; therefore **archive before pruning** when historical
+recovery is required. A failure to save the replacement journal restores the
+prior in-memory journal root, and errors are reported through `err`.
+
+Neither method automatically invokes the other. The archive file is a snapshot
+of the journal as it existed *before* the `Archive` state was appended.
+
 ### Persistent Journal Association
 
 A source document declares a persistent journal with attributes on its document
 element:
 
 ```xml
-<Config JRNL="Config.xml.jrnl" STATE_JID="0123456789abcdef">
+<PonziCoin JRNL="PonziCoin.xml.jrnl"
+           STATE_JID="0123456789abcdef">
 ```
 
 The document element may have any name. `JRNL` contains the journal filename;
 relative names are resolved from the source XML file's directory. Appending
 `.jrnl` to the complete source filename gives predictable names such as
-`Config.xml.jrnl`, `conf_file.yaml.jrnl`, or `conf_file.json.jrnl`.
+`PonziCoin.xml.jrnl`, `conf_file.yaml.jrnl`, or `conf_file.json.jrnl`.
 
 Every `XmlDoc` construction path,including wrapping an existing `xmlDocPtr`,
 opens and validates a declared journal automatically. Applications such as
@@ -581,6 +602,8 @@ std::string StampState(std::string type, std::string note);
 void MarkRelease(std::string note = "");
 void Restore(std::string jid);
 void ValidateState();
+void Archive();
+void Prune();
 ```
 
 ## Usage Example
