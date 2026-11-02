@@ -16,27 +16,25 @@ namespace {
  * invokes exactly one XmlCls operation, then transfers object.err into the
  * appropriate thread-local slot.  The C layer does not invent fallback errors.
  */
-thread_local Error* LastDocErr  = nullptr;
-thread_local Error* LastNodeErr = nullptr;
+thread_local Error LastDocErr;
+thread_local Error LastNodeErr;
 
 thread_local std::string LastString;
 
 void ClearLastDocError()
 {
-    delete LastDocErr;
-    LastDocErr = nullptr;
+    LastDocErr = {};
 }
 
 void ClearLastNodeError()
 {
-    delete LastNodeErr;
-    LastNodeErr = nullptr;
+    LastNodeErr = {};
 }
 
 void TakeDocError(XmlDoc* doc)
 {
     if (doc && doc->err) {
-        LastDocErr = new Error(std::move(doc->err));
+        LastDocErr = std::move(doc->err);
         doc->err = {};
     }
 }
@@ -44,7 +42,7 @@ void TakeDocError(XmlDoc* doc)
 void TakeNodeError(XmlNode& node)
 {
     if (node.err) {
-        LastNodeErr = new Error(std::move(node.err));
+        LastNodeErr = std::move(node.err);
         node.err = {};
     }
 }
@@ -73,24 +71,19 @@ extern "C" {
 
 CErrorPtr XmlDoc_Error()
 {
-    if (!LastDocErr)
-        return nullptr;
+    if (!LastDocErr) return nullptr;
 
-    CErrorPtr ans = LastDocErr->ToCError();
-    delete LastDocErr;
-    LastDocErr = nullptr;
+    CErrorPtr ans = LastDocErr.ToCError();
+    LastDocErr = {};
     return ans;
 }
 
-
 CErrorPtr XmlNode_Error()
 {
-    if (!LastNodeErr)
-        return nullptr;
+    if (!LastNodeErr) return nullptr;
 
-    CErrorPtr ans = LastNodeErr->ToCError();
-    delete LastNodeErr;
-    LastNodeErr = nullptr;
+    CErrorPtr ans = LastNodeErr.ToCError();
+    LastNodeErr = {};
     return ans;
 }
 
