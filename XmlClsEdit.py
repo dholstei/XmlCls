@@ -9,7 +9,7 @@ from pathlib import Path
 from PyQt6.QtCore import QByteArray, QFileSystemWatcher, QMimeData, QTimer, Qt
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
-    QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
+    QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QInputDialog,
     QPlainTextEdit, QToolButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
@@ -104,9 +104,11 @@ class XmlClsEditor(QMainWindow):
         query_row.addWidget(self.query_down)
 
         self.tree = QTreeWidget(self)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setHeaderLabels(["Element", "Content"])
         self.tree.setAlternatingRowColors(True)
         self.tree.currentItemChanged.connect(self._tree_selection_changed)
+        self.tree.itemSelectionChanged.connect(self.selection_changed)
 
         central = QWidget(self)
         layout = QVBoxLayout(central)
@@ -189,6 +191,12 @@ class XmlClsEditor(QMainWindow):
         self.mark_restore_point_action = QAction("Mark Restore &Point...", self)
         self.mark_restore_point_action.triggered.connect(self.mark_restore_point)
 
+        self.archive_prune_action = QAction("&Archive-Prune", self)
+        self.archive_prune_action.triggered.connect(self.archive_prune_journal)
+
+        self.prune_journal_action = QAction("&Prune", self)
+        self.prune_journal_action.triggered.connect(self.prune_journal)
+
     def _create_menus(self):
         file_menu = self.menuBar().addMenu("&File")
         file_menu.addAction(self.open_action)
@@ -217,6 +225,9 @@ class XmlClsEditor(QMainWindow):
         self.journal_menu.addSeparator()
         self.journal_menu.addAction(self.mark_release_action)
         self.journal_menu.addAction(self.mark_restore_point_action)
+        self.journal_menu.addSeparator()
+        self.journal_menu.addAction(self.archive_prune_action)
+        self.journal_menu.addAction(self.prune_journal_action)
         self.restore_menu = self.journal_menu.addMenu("&Restore")
         self.restore_menu.setToolTipsVisible(True)
         self.journal_menu.aboutToShow.connect(self.refresh_journal_menu)
@@ -264,6 +275,45 @@ class XmlClsEditor(QMainWindow):
         self.refresh_journal_menu()
         self._watch_file()
 
+    def selection_changed(self):
+        current = self.tree.currentItem()
+        if not current or not current.isSelected():
+            return
+
+        # Prevent recursive selection notifications.
+        self.tree.blockSignals(True)
+
+        try:
+            # Deselect selected ancestors.
+            parent = current.parent()
+            while parent:
+                parent.setSelected(False)
+                parent = parent.parent()
+
+            # Deselect selected descendants.
+            def deselect_children(item):
+                for i in range(item.childCount()):
+                    child = item.child(i)
+                    child.setSelected(False)
+                    deselect_children(child)
+
+            deselect_children(current)
+
+        finally:
+            self.tree.blockSignals(False)
+
+    def select(self) -> list[XmlNode]:
+        if not self.dom:
+            return []
+
+        nodes = []
+        for item in self.tree.selectedItems():
+            ptr = item.data(0, XML_NODE_ROLE)
+            if ptr:
+                nodes.append(XmlNode(self.dom, ptr))
+
+        return nodes
+
     def refresh_journal_menu(self):
         enabled = bool(self.dom and self.dom.HasJournal())
         declared = bool(self.dom and self.dom.XPath("boolean(/*/@JRNL)", bool))
@@ -273,6 +323,8 @@ class XmlClsEditor(QMainWindow):
         self.mark_release_action.setEnabled(enabled)
         self.mark_restore_point_action.setEnabled(enabled)
         self.restore_menu.setEnabled(enabled)
+        self.archive_prune_action.setEnabled(enabled)
+        self.prune_journal_action.setEnabled(enabled)
         self.restore_menu.clear()
 
         if not enabled:
@@ -287,6 +339,28 @@ class XmlClsEditor(QMainWindow):
             action.setToolTip(point.note)
             action.setStatusTip(point.note)
             action.triggered.connect(lambda checked=False, jid=point.jid: self.restore(jid))
+
+    def archive_prune_journal(self):
+        if not self.dom or not self.dom.HasJournal():
+            return
+        self.dom.Archive()
+        if self.dom.err:
+            self.dom.err.publish()
+            return
+        self.dom.Prune()
+        if self.dom.err:
+            self.dom.err.publish()
+            return
+        self.refresh_journal_menu()
+
+    def prune_journal(self):
+        if not self.dom or not self.dom.HasJournal():
+            return
+        self.dom.Prune()
+        if self.dom.err:
+            self.dom.err.publish()
+            return
+        self.refresh_journal_menu()
 
     def create_journal(self):
         if not self.dom or not self.filename:
@@ -619,19 +693,34 @@ class XmlClsEditor(QMainWindow):
         return XmlNode(self.dom, ptr if isinstance(ptr, c_void_p) else c_void_p(ptr))
 
     def copy_xml(self):
-        node = self.current_node()
-        if node:
-            QApplication.clipboard().setText(node.XML())
+        nodes = self.select()
+        if not nodes:
+            return
+
+        xml = "\n".join(node.XML() for node in nodes)
+
+        if self.dom.err:
+            self.dom.err.publish()
+            return
+
+        QApplication.clipboard().setText(xml)
 
     def cut_xml(self):
-        node = self.current_node()
-        if not node:
+        nodes = self.select()
+        if not nodes:
+            return
+
+        xml = "\n".join(node.XML() for node in nodes)
+
+        if self.dom.err:
+            self.dom.err.publish()
             return
 
         mime = QMimeData()
-        mime.setText(node.XML())
+        mime.setText(xml)
         mime.setData(CUT_MIME, QByteArray(b"cut"))
-        self.cut_node = c_void_p(node.node.value)
+
+        self.cut_node = nodes
         QApplication.clipboard().setMimeData(mime)
 
     def clipboard_changed(self):
@@ -647,6 +736,14 @@ class XmlClsEditor(QMainWindow):
             clipboard.setText(mime.text())
 
     def paste_xml(self, operation: str):
+        if self.cut_node and len(self.cut_node) > 1:
+            QMessageBox.warning(
+                self,
+                "Multiple Node Move",
+                "Moving multiple selected nodes is not supported."
+            )
+            return
+        
         node = self.current_node()
         clipboard = QApplication.clipboard()
         mime = clipboard.mimeData()
@@ -655,7 +752,7 @@ class XmlClsEditor(QMainWindow):
             return
 
         if self.cut_node and mime and mime.hasFormat(CUT_MIME):
-            source = XmlNode(self.dom, c_void_p(self.cut_node.value))
+            source = self.cut_node[0]
             move = {"AddChild": "MoveChild", "AddBefore": "MoveBefore", "AddAfter": "MoveAfter"}[operation]
             self._mutate(source, move, node)
             return
@@ -668,11 +765,25 @@ class XmlClsEditor(QMainWindow):
         editor = DirectEditor(node.XML(), self)
         if editor.exec() == QDialog.DialogCode.Accepted:
             self._mutate(node, "parse", editor.xml())
-
+    
     def delete_node(self):
-        node = self.current_node()
-        if node:
-            self._mutate(node, "Delete")
+        nodes = self.select()
+        if not nodes:
+            return
+
+        deleted = False
+
+        for node in nodes:
+            if not node.Delete():
+                if node.err:
+                    node.err.publish()
+                break
+            deleted = True
+
+        if deleted:
+            self.populate_tree()
+            self._set_dirty(True)
+            self.cancel_cut()
 
     def _mutate(self, node: XmlNode, operation: str, *args):
         result = getattr(node, operation)(*args)

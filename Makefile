@@ -36,7 +36,7 @@ endif
 
 XMLCLS_LIB := XmlClsLib.so
 
-all: libXmlCls.a $(XMLCLS_LIB)
+all: libXmlCls.a $(XMLCLS_LIB) test
 
 $(XMLCLS_LIB): XmlClsLib.o XmlCls.o Error.o
 	@if $(CXX) -shared -o $@ $^ -L../cpp-base64  $(LDLIBS);\

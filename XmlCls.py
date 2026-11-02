@@ -151,6 +151,10 @@ class XmlCls:
         cls._lib.XmlJrnl_Restore.restype = None
         cls._lib.XmlJrnl_RestorePoints.argtypes = [c_void_p]
         cls._lib.XmlJrnl_RestorePoints.restype = c_char_p
+        cls._lib.XmlJrnl_Archive.argtypes = [c_void_p]
+        cls._lib.XmlJrnl_Archive.restype = None
+        cls._lib.XmlJrnl_Prune.argtypes = [c_void_p]
+        cls._lib.XmlJrnl_Prune.restype = None
 
         # XPath.  Scalar functions return the C++ value directly.
         # Node functions return the underlying xmlNodePtr; ownership remains
@@ -277,6 +281,22 @@ class XmlCls:
         journal = self._lib.XmlDoc_Journal(self.doc) if self.doc else None
         if journal:
             self._lib.XmlJrnl_Redo(journal)
+        error = self._lib.XmlDoc_Error()
+        self.err = Error(error) if error else None
+        return not self.err
+
+    def Archive(self) -> bool:
+        journal = self._lib.XmlDoc_Journal(self.doc) if self.doc else None
+        if journal:
+            self._lib.XmlJrnl_Archive(journal)
+        error = self._lib.XmlDoc_Error()
+        self.err = Error(error) if error else None
+        return not self.err
+
+    def Prune(self) -> bool:
+        journal = self._lib.XmlDoc_Journal(self.doc) if self.doc else None
+        if journal:
+            self._lib.XmlJrnl_Prune(journal)
         error = self._lib.XmlDoc_Error()
         self.err = Error(error) if error else None
         return not self.err

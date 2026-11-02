@@ -174,6 +174,35 @@ void test_parse_replace_node()
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("Tail"));
 }
 
+void test_malformed_xml_mutations()
+{
+    banner("malformed XML mutation regression");
+
+    const std::string invalid = "<First/><threads short_arg=\"-t\">0</threads>";
+    XmlDoc doc(std::string("<Root><Original/></Root>"));
+    CHECK(!doc.err);
+    if (doc.err) return;
+
+    auto root = require_nodes(doc, "/Root")[0];
+    auto original = require_nodes(doc, "/Root/Original")[0];
+    const std::string before = doc.XML();
+
+    // Paste: reject multiple top-level elements without modifying the DOM.
+    XmlNode added = root.AddChild(invalid);
+    CHECK(added.node == nullptr);
+    CHECK(root.err);
+    print_error("AddChild(invalid)", root.err);
+    CHECK_EQ(doc.XML(), before);
+
+    // Direct edit: reject the same input without replacing the node.
+    doc.err = {};
+    original.parse(invalid);
+    CHECK(original.err);
+    print_error("parse(invalid)", original.err);
+    CHECK_EQ(doc.XML(), before);
+    CHECK_EQ(doc.XPath<int>("count(/Root/Original)"), 1);
+}
+
 void test_delete_node()
 {
     banner("Delete node");
@@ -1913,6 +1942,7 @@ int main()
     test_document_xpath();
     test_add_child_before_after_and_vectors();
     test_parse_replace_node();
+    test_malformed_xml_mutations();
     test_delete_node();
     test_save_and_reload();
     test_xmljrnl_constructor_and_active_release();

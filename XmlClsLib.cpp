@@ -36,16 +36,16 @@ void ClearLastNodeError()
 void TakeDocError(XmlDoc* doc)
 {
     if (doc && doc->err) {
-        LastDocErr = doc->err;
-        doc->err = nullptr;
+        LastDocErr = new Error(std::move(doc->err));
+        doc->err = {};
     }
 }
 
 void TakeNodeError(XmlNode& node)
 {
     if (node.err) {
-        LastNodeErr = node.err;
-        node.err = nullptr;
+        LastNodeErr = new Error(std::move(node.err));
+        node.err = {};
     }
 }
 
@@ -605,5 +605,29 @@ void XmlJrnl_Restore(void* journal, const char* jid)
     jrnl->Restore(jid ? jid : "");
     TakeDocError(jrnl);
 }
+
+
+void XmlJrnl_Archive(void* journal)
+{
+    ClearLastDocError();
+
+    XmlJrnl* jrnl = static_cast<XmlJrnl*>(journal);
+    if (!jrnl) return;
+
+    jrnl->Archive();
+    TakeDocError(jrnl);
+}
+
+void XmlJrnl_Prune(void* journal)
+{
+    ClearLastDocError();
+
+    XmlJrnl* jrnl = static_cast<XmlJrnl*>(journal);
+    if (!jrnl) return;
+
+    jrnl->Prune();
+    TakeDocError(jrnl);
+}
+
 
 } // extern "C"
