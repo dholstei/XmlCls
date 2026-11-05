@@ -58,8 +58,6 @@ inline std::string LvlStr(lvl level)
     }
 }
 
-inline bool IsErr(const Error& error) { return bool(error); }
-
 inline std::string MsgErr(const Error& error) { return error ? error.msg : ""; }
 
 #define MSG_ERR(error) do { \
