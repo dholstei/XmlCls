@@ -45,6 +45,13 @@
 class XmlJrnl;
 class XmlNode;
 
+/** Ephemeral element construction descriptor; content is plain text. */
+struct XmlElement {
+    std::map<std::string, std::string> attributes;
+    std::string name;
+    std::string content;
+};
+
 static std::string CurrentIsoTimestampUTC()
 {
     std::time_t now = std::time(nullptr);
@@ -76,7 +83,7 @@ class XmlDoc
 {
 
 public:
-    Error err;                          ///< Last error/status reported by this wrapper.
+    mutable Error err;                          ///< Last error/status reported by this wrapper.
     xmlXPathContextPtr ctxt = nullptr;  ///< Cached XPath context for this DOM.
     XmlJrnl* JRNL = nullptr;            ///< Optional mutation journal attached to this DOM.
     xmlDocPtr const doc;                ///< Immutable identity of the wrapped libxml2 DOM.
@@ -131,14 +138,7 @@ public:
     *
     * @return XML string representation of the document.
     */
-    std::string XML() const {
-        xmlChar *xmlbuff;
-        int buffersize;
-        xmlDocDumpFormatMemory(doc, &xmlbuff, &buffersize, 1);
-        std::string result = std::string((char *)xmlbuff, buffersize);
-        xmlFree(xmlbuff);
-        return result;
-    }
+    std::string XML(bool canonical = false) const;
     std::string to_string() const { return XML(); }
     explicit operator std::string() const { return XML(); }
     std::ostream& operator<<(std::ostream& os) { return os << XML(); }
@@ -228,7 +228,7 @@ private:
 public:
     xmlDocPtr doc = nullptr;             ///< Parent libxml2 document.
     xmlNodePtr node = nullptr;           ///< Wrapped libxml2 node.
-    Error err;                           ///< Last error/status reported by this wrapper.
+    mutable Error err;                           ///< Last error/status reported by this wrapper.
     xmlXPathContextPtr ctxt = nullptr;   ///< Borrowed document XPath context.
     XmlJrnl* JRNL = nullptr;             ///< Journal attached to the owning XmlDoc, if any.
 
@@ -258,13 +258,7 @@ public:
     *
     * @return XML string representation of the node only.
     */
-    std::string XML() const {
-        xmlBufferPtr buffer = xmlBufferCreate();
-        xmlNodeDump(buffer, doc, node, 0, 1);
-        std::string result = std::string((char *)buffer->content, buffer->use);
-        xmlBufferFree(buffer);
-        return result;
-    }
+    std::string XML(bool canonical = false) const;
     std::string to_string() const { return XML(); }
     explicit operator std::string() const { return XML(); }
     std::ostream& operator<<(std::ostream& os) { return os << XML(); }
@@ -279,7 +273,9 @@ public:
      */
     void parse(std::string XML);
 
-    template<typename Pos> XmlNode Add(Pos pos, std::string XmlStr);
+    /** Insert relative to this node; Pos is Child, Before, or After. */
+    template<typename Pos> XmlNode Add(const std::string& XML);
+    template<typename Pos> XmlNode Add(const XmlElement& element);
     /**
      * @brief Parse XML text and append it as a child of this node.
      * @param XmlStr XML text for the node to insert.
@@ -325,7 +321,8 @@ public:
         return lastAdded;
     }
 
-    template<typename Pos> void Move(Pos pos);
+    /** Move this node relative to destination; Pos is Child, Before, or After. */
+    template<typename Pos> void Move(XmlNode destination);
 
     void MoveChild(XmlNode parent);
     void MoveBefore(XmlNode sibling);
@@ -412,6 +409,11 @@ public:
         return ans;
     }
 
+private:
+    // Pos objects are implementation details, not public mutation arguments.
+    template<typename Pos> XmlNode Insert(Pos pos, const std::string& XML);
+    template<typename Pos> XmlNode Insert(Pos pos, const XmlElement& element);
+    template<typename Pos> void MoveTo(Pos pos);
 };
 
 struct Child {
@@ -654,7 +656,7 @@ private:
 struct Action {
     XmlJrnl& jrnl;             ///< Journal/source context for this action.
     XmlNode action_node;       ///< Change node in the journal DOM.
-    Error err;      ///< Action-local error or INFO conflict status.
+    mutable Error err;      ///< Action-local error or INFO conflict status.
 
     std::string type;          ///< Change Type attribute supplied by the specialization.
     std::string jid;           ///< Logical source-node JID supplied by the specialization.

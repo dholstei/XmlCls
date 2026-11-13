@@ -1,5 +1,7 @@
 #include "XmlCls.h"
 #include "base64.h"
+#include <libxml/c14n.h>
+#include <libxml/valid.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -136,6 +138,60 @@ static bool FlushFile(const char* filename, Error& err)
 }
 
 
+}
+
+
+std::string XmlDoc::XML(bool canonical) const
+{
+    if (!doc) { err = Error{lvl::ERR, "Cannot serialize null document", ""}; return {}; }
+    xmlChar* buffer = nullptr;
+    int size = -1;
+    if (canonical)
+        size = xmlC14NDocDumpMemory(doc, nullptr, XML_C14N_1_0, nullptr, 0, &buffer);
+    else {
+        xmlDocDumpFormatMemory(doc, &buffer, &size, 1);
+    }
+    if (size < 0 || !buffer) {
+        if (buffer) xmlFree(buffer);
+        err = Error{lvl::ERR, "Document serialization failed", ""};
+        return {};
+    }
+    std::string result(reinterpret_cast<const char*>(buffer), size);
+    xmlFree(buffer);
+    return result;
+}
+
+std::string XmlNode::XML(bool canonical) const
+{
+    if (!node || !doc) { err = Error{lvl::ERR, "Cannot serialize invalid node", ""}; return {}; }
+    if (!canonical) {
+        xmlBufferPtr buffer = xmlBufferCreate();
+        if (!buffer) { err = Error{lvl::ERR, "Cannot allocate XML buffer", ""}; return {}; }
+        int rc = xmlNodeDump(buffer, doc, node, 0, 1);
+        if (rc < 0) { xmlBufferFree(buffer); err = Error{lvl::ERR, "Node serialization failed", ""}; return {}; }
+        std::string result(reinterpret_cast<const char*>(xmlBufferContent(buffer)), xmlBufferLength(buffer));
+        xmlBufferFree(buffer);
+        return result;
+    }
+    // Canonicalize a detached copy of the subtree without modifying the live DOM.
+    xmlDocPtr temp = xmlNewDoc(BAD_CAST "1.0");
+    if (!temp) { err = Error{lvl::ERR, "Cannot allocate canonicalization document", ""}; return {}; }
+    xmlNodePtr copy = xmlDocCopyNode(node, temp, 1);
+    if (!copy) { xmlFreeDoc(temp); err = Error{lvl::ERR, "Cannot copy canonicalization subtree", ""}; return {}; }
+    xmlDocSetRootElement(temp, copy);
+    if (xmlReconciliateNs(temp, copy) < 0) {
+        xmlFreeDoc(temp); err = Error{lvl::ERR, "Cannot reconcile subtree namespaces", ""}; return {};
+    }
+    xmlChar* buffer = nullptr;
+    int size = xmlC14NDocDumpMemory(temp, nullptr, XML_C14N_1_0, nullptr, 0, &buffer);
+    xmlFreeDoc(temp);
+    if (size < 0 || !buffer) {
+        if (buffer) xmlFree(buffer);
+        err = Error{lvl::ERR, "Node canonicalization failed", ""}; return {};
+    }
+    std::string result(reinterpret_cast<const char*>(buffer), size);
+    xmlFree(buffer);
+    return result;
 }
 
 XmlDoc::XmlDoc(xmlDocPtr doc)
@@ -689,7 +745,7 @@ static xmlNodePtr XmlNodeFromString(const std::string& XmlStr, xmlDocPtr ownerDo
 }
 
 template<typename Pos>
-XmlNode XmlNode::Add(Pos pos, std::string XmlStr)
+XmlNode XmlNode::Insert(Pos pos, const std::string& XmlStr)
 {
     if (!pos.destination.node || !pos.destination.doc) {
         err = Error{lvl::ERR, "Cannot Add: invalid destination", XmlStr.substr(0, 200)};
@@ -724,27 +780,87 @@ XmlNode XmlNode::Add(Pos pos, std::string XmlStr)
     return result;
 }
 
-template XmlNode XmlNode::Add<Before>(Before, std::string XmlStr);
-template XmlNode XmlNode::Add<After>(After, std::string XmlStr);
-template XmlNode XmlNode::Add<Child>(Child, std::string XmlStr);
+
+
+
+
+
+static xmlNodePtr XmlNodeFromElement(const XmlElement& element, xmlDocPtr ownerDoc, Error& err)
+{
+    if (!ownerDoc || element.name.empty() ||
+        xmlValidateName(BAD_CAST element.name.c_str(), 0) != 0 ||
+        element.name.find(':') != std::string::npos) {
+        err = Error{lvl::ERR, "Cannot Add: invalid element name or document", element.name};
+        return nullptr;
+    }
+    xmlNodePtr imported = xmlNewDocNode(ownerDoc, nullptr, BAD_CAST element.name.c_str(), nullptr);
+    if (!imported) { err = Error{lvl::ERR, "Cannot Add: element allocation failed", element.name}; return nullptr; }
+    for (const auto& [name, value] : element.attributes) {
+        if (name.empty() || xmlValidateName(BAD_CAST name.c_str(), 0) != 0 ||
+            name.find(':') != std::string::npos ||
+            !xmlNewProp(imported, BAD_CAST name.c_str(), BAD_CAST value.c_str())) {
+            err = Error{lvl::ERR, "Cannot Add: invalid attribute", name};
+            xmlFreeNode(imported);
+            return nullptr;
+        }
+    }
+    if (!element.content.empty()) {
+        xmlNodePtr content = xmlNewDocText(ownerDoc, BAD_CAST element.content.c_str());
+        if (!content || !xmlAddChild(imported, content)) {
+            if (content && !content->parent) xmlFreeNode(content);
+            xmlFreeNode(imported);
+            err = Error{lvl::ERR, "Cannot Add: text allocation failed", element.name};
+            return nullptr;
+        }
+    }
+    return imported;
+}
+
+template<typename Pos>
+XmlNode XmlNode::Insert(Pos pos, const XmlElement& element)
+{
+    if (!pos.destination.node || !pos.destination.doc) {
+        err = Error{lvl::ERR, "Cannot Add: invalid destination", element.name};
+        return XmlNode();
+    }
+    MUTABLE_CHECK(pos.destination.doc, return XmlNode());
+    xmlNodePtr imported = XmlNodeFromElement(element, pos.destination.doc, err);
+    if (!imported) return XmlNode();
+    xmlNodePtr added = pos.Place(imported);
+    if (!added) {
+        xmlFreeNode(imported);
+        err = Error{lvl::ERR, "Cannot Add: element placement failed", element.name};
+        return XmlNode();
+    }
+    XmlNode result(added);
+    if (result.JRNL) {
+        result.JRNL->LogAdd(result);
+        if (result.JRNL->err) { result.err = result.JRNL->err; err = result.err; }
+    }
+    return result;
+}
+
+
+
+
 
 XmlNode XmlNode::AddChild(std::string XmlStr)
 {
-    return Add(Child{*this}, XmlStr);
+    return Add<Child>(XmlStr);
 }
 
 XmlNode XmlNode::AddBefore(std::string XmlStr)
 {
-    return Add(Before{*this}, XmlStr);
+    return Add<Before>(XmlStr);
 }
 
 XmlNode XmlNode::AddAfter(std::string XmlStr)
 {
-    return Add(After{*this}, XmlStr);
+    return Add<After>(XmlStr);
 }
 
 template<typename Pos>
-void XmlNode::Move(Pos pos)
+void XmlNode::MoveTo(Pos pos)
 {
     if (!node || !node->doc) {
         err = Error{lvl::ERR, "Cannot Move: invalid source XmlNode", ""};
@@ -797,24 +913,53 @@ void XmlNode::Move(Pos pos)
     if (action.err) err = action.err;
 }
 
-template void XmlNode::Move<Before>(Before);
-template void XmlNode::Move<After>(After);
-template void XmlNode::Move<Child>(Child);
+
+
+
 
 void XmlNode::MoveChild(XmlNode parent)
 {
-    Move(Child{parent});
+    Move<Child>(parent);
 }
 
 void XmlNode::MoveBefore(XmlNode sibling)
 {
-    Move(Before{sibling});
+    Move<Before>(sibling);
 }
 
 void XmlNode::MoveAfter(XmlNode sibling)
 {
-    Move(After{sibling});
+    Move<After>(sibling);
 }
+
+// Public templates carry the position in the template argument only.
+template<typename Pos>
+XmlNode XmlNode::Add(const std::string& XML)
+{
+    return Insert(Pos{*this}, XML);
+}
+
+template<typename Pos>
+XmlNode XmlNode::Add(const XmlElement& element)
+{
+    return Insert(Pos{*this}, element);
+}
+
+template<typename Pos>
+void XmlNode::Move(XmlNode destination)
+{
+    MoveTo(Pos{destination});
+}
+
+#define INSTANTIATE_POSITION(Pos)                                      \
+    template XmlNode XmlNode::Add<Pos>(const std::string&);           \
+    template XmlNode XmlNode::Add<Pos>(const XmlElement&);            \
+    template void XmlNode::Move<Pos>(XmlNode);
+
+INSTANTIATE_POSITION(Child)
+INSTANTIATE_POSITION(Before)
+INSTANTIATE_POSITION(After)
+#undef INSTANTIATE_POSITION
 
 std::string XmlNode::JID()
 {

@@ -1297,7 +1297,7 @@ void test_journal_move_before()
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("C"));
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[4])"), std::string("D"));
 
-    d.Move(Before{b});
+    d.Move<Before>(b);
 
     print_error("MoveBefore(D, B)", d.err);
     CHECK(!d.err);
@@ -1420,7 +1420,7 @@ void test_journal_move_after()
      * A B C D
      * Move A after C -> B C A D
      */
-    a.Move(After{c});
+    a.Move<After>(c);
 
     CHECK(!a.err);
     CHECK(!doc.JRNL->err);
@@ -1502,7 +1502,7 @@ void test_journal_move_child()
      * Left:  A
      * Right: C D B
      */
-    b.Move(Child{right});
+    b.Move<Child>(right);
 
     CHECK(!b.err);
     CHECK(!doc.JRNL->err);
@@ -1568,7 +1568,7 @@ void test_move_noop()
     /*
      * B is already immediately before C.
      */
-    b.Move(Before{c});
+    b.Move<Before>(c);
 
     CHECK(!b.err);
     CHECK_EQ(doc.JRNL->active_release.XPath<int>("count(./Change)"), changes);
@@ -1576,7 +1576,7 @@ void test_move_noop()
     /*
      * C is already the final child of Root.
      */
-    c.Move(Child{root});
+    c.Move<Child>(root);
 
     CHECK(!c.err);
     CHECK_EQ(doc.JRNL->active_release.XPath<int>("count(./Change)"), changes);
@@ -1747,7 +1747,7 @@ void test_journal_undo_move_conflict()
      *     ->
      * A D B C
      */
-    d.Move(Before{b});
+    d.Move<Before>(b);
 
     CHECK(!d.err);
     CHECK(!doc.JRNL->err);
@@ -1765,7 +1765,7 @@ void test_journal_undo_move_conflict()
      *
      * D is no longer in the To slot recorded by the first Move.
      */
-    b.Move(Before{d});
+    b.Move<Before>(d);
 
     CHECK(!b.err);
     CHECK(!doc.JRNL->err);
@@ -1844,7 +1844,7 @@ void test_journal_redo()
 
     a = doc.XPath<std::vector<XmlNode>>("/Root/A")[0];
     c = doc.XPath<std::vector<XmlNode>>("/Root/C")[0];
-    c.Move(Before{a});
+    c.Move<Before>(a);
     CHECK(!c.err);
     CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("C"));
     doc.JRNL->Undo();
@@ -1933,6 +1933,163 @@ void test_journal_archive()
     std::remove(journal_path);
 }
 
+void test_templated_add_and_xml_element()
+{
+    banner("Add<Pos> / XmlElement / escaping");
+
+    XmlDoc doc(std::string("<Root><A/></Root>"));
+    CHECK(!doc.err);
+
+    XmlNode root = require_nodes(doc, "/Root")[0];
+    XmlNode a = require_nodes(doc, "/Root/A")[0];
+
+    XmlElement element{
+        {{"id", "1"}, {"description", "A & \"B\""}},
+        "Item",
+        "One < two & three"
+    };
+
+    XmlNode item = root.Add<Child>(element);
+    print_error("Add<Child>(XmlElement)", root.err);
+    CHECK(!root.err);
+    CHECK(item.node != nullptr);
+    CHECK_EQ(item.XPath<std::string>("@id"), std::string("1"));
+    CHECK_EQ(item.XPath<std::string>("@description"), std::string("A & \"B\""));
+    CHECK_EQ(item.XPath<std::string>("string(.)"), std::string("One < two & three"));
+
+    const std::string item_xml = item.XML();
+    CHECK(item_xml.find("A &amp; &quot;B&quot;") != std::string::npos);
+    CHECK(item_xml.find("One &lt; two &amp; three") != std::string::npos);
+
+    XmlNode before = a.Add<Before>(
+        XmlElement{{{"id", "before"}}, "Before", ""}
+    );
+    CHECK(before.node != nullptr);
+    CHECK(!a.err);
+
+    XmlNode after = a.Add<After>(
+        XmlElement{{{"id", "after"}}, "After", ""}
+    );
+    CHECK(after.node != nullptr);
+    CHECK(!a.err);
+
+    XmlNode child_xml = root.Add<Child>(std::string("<FromString/>"));
+    CHECK(child_xml.node != nullptr);
+    CHECK(!root.err);
+
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("Before"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("A"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[3])"), std::string("After"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/Item)"), 1);
+    CHECK_EQ(doc.XPath<int>("count(/Root/FromString)"), 1);
+
+    // Nested content is constructed through returned XmlNode objects.
+    XmlNode nested = item.Add<Child>(
+        XmlElement{{}, "Nested", "text & more"}
+    );
+    CHECK(nested.node != nullptr);
+    CHECK(!item.err);
+    CHECK_EQ(doc.XPath<std::string>("/Root/Item/Nested"), std::string("text & more"));
+
+    print_xml("after templated Add mutations", doc);
+}
+
+void test_templated_move_without_journal()
+{
+    banner("Move<Pos> without journal");
+
+    XmlDoc doc(std::string("<Root><A/><B/><Group/></Root>"));
+    CHECK(!doc.err);
+
+    XmlNode a = require_nodes(doc, "/Root/A")[0];
+    XmlNode b = require_nodes(doc, "/Root/B")[0];
+    XmlNode group = require_nodes(doc, "/Root/Group")[0];
+
+    a.Move<After>(b);
+    print_error("Move<After>", a.err);
+    CHECK(!a.err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("B"));
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[2])"), std::string("A"));
+
+    a.Move<Before>(b);
+    print_error("Move<Before>", a.err);
+    CHECK(!a.err);
+    CHECK_EQ(doc.XPath<std::string>("name(/Root/*[1])"), std::string("A"));
+
+    a.Move<Child>(group);
+    print_error("Move<Child>", a.err);
+    CHECK(!a.err);
+    CHECK_EQ(doc.XPath<int>("count(/Root/A)"), 0);
+    CHECK_EQ(doc.XPath<int>("count(/Root/Group/A)"), 1);
+
+    print_xml("after templated Move mutations", doc);
+}
+
+void test_canonical_serialization()
+{
+    banner("XML(false) / XML(true) C14N 1.0");
+
+    XmlDoc doc(std::string(
+        "<Root z=\"last\" a=\"first\"><!--comment--><Empty/></Root>"
+    ));
+    CHECK(!doc.err);
+
+    const std::string formatted = doc.XML(false);
+    const std::string canonical = doc.XML(true);
+
+    print_error("XmlDoc::XML(true)", doc.err);
+    CHECK(!doc.err);
+    CHECK(!formatted.empty());
+    CHECK_EQ(canonical,
+        std::string("<Root a=\"first\" z=\"last\"><Empty></Empty></Root>"));
+    CHECK(canonical.find("<?xml") == std::string::npos);
+    CHECK(canonical.find("comment") == std::string::npos);
+
+    XmlNode empty = require_nodes(doc, "/Root/Empty")[0];
+    CHECK_EQ(empty.XML(true), std::string("<Empty></Empty>"));
+    CHECK(!empty.err);
+
+    print_xml("formatted XML", doc);
+    std::cout << "\n--- canonical XML ---\n" << canonical << '\n';
+}
+
+void test_templated_add_with_journal()
+{
+    banner("Add<Child>(XmlElement) journal integration");
+
+    const char* path = "/tmp/xmlcls_test_templated_add.jrnl.xml";
+    std::remove(path);
+
+    XmlDoc doc(std::string("<Root/>"));
+    CHECK(!doc.err);
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    if (!doc.JRNL) return;
+    CHECK(!doc.JRNL->err);
+
+    XmlNode root = require_nodes(doc, "/Root")[0];
+    XmlNode added = root.Add<Child>(
+        XmlElement{{{"type", "test"}}, "Entry", "A & B"}
+    );
+
+    print_error("Add<Child> with journal", root.err);
+    CHECK(!root.err);
+    CHECK(added.node != nullptr);
+    CHECK(!doc.JRNL->err);
+    CHECK_EQ(doc.XPath<std::string>("/Root/Entry"), std::string("A & B"));
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change[@Type='Add'])"), 1);
+
+    const std::string jid = added.XPath<std::string>("@JID");
+    CHECK(!jid.empty());
+    CHECK_EQ(doc.JRNL->XPath<std::string>(
+        "(//Change[@Type='Add'])[last()]/@JID"), jid);
+
+    print_xml("source after templated journal Add", doc);
+    print_xml("journal after templated journal Add", doc.JRNL);
+
+    std::remove(path);
+}
+
 } // namespace
 
 int main()
@@ -1940,6 +2097,10 @@ int main()
     xmlInitParser();
 
     test_document_xpath();
+    test_templated_add_and_xml_element();
+    test_templated_move_without_journal();
+    test_canonical_serialization();
+    test_templated_add_with_journal();
     test_add_child_before_after_and_vectors();
     test_parse_replace_node();
     test_malformed_xml_mutations();
