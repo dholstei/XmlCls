@@ -360,20 +360,27 @@ const char* XmlNode_GetPath(xmlNodePtr node)
     return LastString.c_str();
 }
 
-const char* XmlNode_XML(xmlNodePtr node)
+const char* XmlDoc_XML(void* owner, int canonical)
 {
-    ClearLastNodeError();
+    ClearLastDocError();
     LastString.clear();
-
-    if (!node)
-        return LastString.c_str();
-
-    XmlNode n(node);
-    LastString = n.XML();
-    TakeNodeError(n);
+    XmlDoc* doc = CDoc(owner);
+    if (!doc) return LastString.c_str();
+    LastString = doc->XML(canonical != 0);
+    TakeDocError(doc);
     return LastString.c_str();
 }
 
+const char* XmlNode_XML(xmlNodePtr node, int canonical)
+{
+    ClearLastNodeError();
+    LastString.clear();
+    if (!node) return LastString.c_str();
+    XmlNode n(node);
+    LastString = n.XML(canonical != 0);
+    TakeNodeError(n);
+    return LastString.c_str();
+}
 
 xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML)
 {
@@ -389,95 +396,64 @@ xmlNodePtr XmlNode_Parse(xmlNodePtr node, const char* XML)
 }
 
 
-xmlNodePtr XmlNode_AddChild(xmlNodePtr node, const char* XML)
+/* Position values are part of the C ABI: 0=Child, 1=Before, 2=After. */
+enum XmlInsertPosition { XML_CHILD = 0, XML_BEFORE = 1, XML_AFTER = 2 };
+
+/* Explicit value type: 0 = XML string, 1 = XmlElement. */
+enum XmlAddType { XML_STRING = 0, XML_ELEMENT = 1 };
+xmlNodePtr XmlNode_Add(xmlNodePtr node, int pos, int type, const char* XML,
+                       const char* name, const char* content,
+                       const char* const* keys, const char* const* values,
+                       size_t count)
 {
     ClearLastNodeError();
-
-    if (!node)
-        return nullptr;
+    if (!node) return nullptr;
 
     XmlNode n(node);
-    XmlNode ans = n.AddChild(XML ? XML : "");
+    XmlNode ans;
+    if (type == XML_ELEMENT) {
+        XmlElement element;
+        element.name = name;
+        element.content = content ? content : "";
+        if (count && (!keys || !values)) return nullptr;
+        for (size_t i = 0; i < count; ++i)
+            element.attributes[keys[i] ? keys[i] : ""] = values[i] ? values[i] : "";
+
+        switch (pos) {
+            case XML_CHILD:  ans = n.Add<Child>(element); break;
+            case XML_BEFORE: ans = n.Add<Before>(element); break;
+            case XML_AFTER:  ans = n.Add<After>(element); break;
+            default: return nullptr;
+        }
+    } else if (type == XML_STRING) {
+        const std::string xml = XML ? XML : "";
+        switch (pos) {
+            case XML_CHILD:  ans = n.Add<Child>(xml); break;
+            case XML_BEFORE: ans = n.Add<Before>(xml); break;
+            case XML_AFTER:  ans = n.Add<After>(xml); break;
+            default: return nullptr;
+        }
+    } else return nullptr;
 
     TakeNodeError(n);
-    if (!LastNodeErr)
-        TakeNodeError(ans);
-
+    if (!LastNodeErr) TakeNodeError(ans);
     return ans.node;
 }
 
-
-xmlNodePtr XmlNode_AddBefore(xmlNodePtr node, const char* XML)
+/* One C entry point for all three C++ Move<Pos> specializations. */
+void XmlNode_Move(xmlNodePtr node, int pos, xmlNodePtr destination)
 {
     ClearLastNodeError();
-
-    if (!node)
-        return nullptr;
+    if (!node) return;
 
     XmlNode n(node);
-    XmlNode ans = n.AddBefore(XML ? XML : "");
-
-    TakeNodeError(n);
-    if (!LastNodeErr)
-        TakeNodeError(ans);
-
-    return ans.node;
-}
-
-
-xmlNodePtr XmlNode_AddAfter(xmlNodePtr node, const char* XML)
-{
-    ClearLastNodeError();
-
-    if (!node)
-        return nullptr;
-
-    XmlNode n(node);
-    XmlNode ans = n.AddAfter(XML ? XML : "");
-
-    TakeNodeError(n);
-    if (!LastNodeErr)
-        TakeNodeError(ans);
-
-    return ans.node;
-}
-
-
-void XmlNode_MoveChild(xmlNodePtr node, xmlNodePtr parent)
-{
-    ClearLastNodeError();
-
-    if (!node)
-        return;
-
-    XmlNode n(node);
-    n.MoveChild(XmlNode(parent));
-    TakeNodeError(n);
-}
-
-
-void XmlNode_MoveBefore(xmlNodePtr node, xmlNodePtr sibling)
-{
-    ClearLastNodeError();
-
-    if (!node)
-        return;
-
-    XmlNode n(node);
-    n.MoveBefore(XmlNode(sibling));
-    TakeNodeError(n);
-}
-
-
-void XmlNode_MoveAfter(xmlNodePtr node, xmlNodePtr sibling)
-{
-    ClearLastNodeError();
-
-    if (!node)
-        return;
-
-    XmlNode n(node);
-    n.MoveAfter(XmlNode(sibling));
+    XmlNode target(destination);
+    switch (pos) {
+        case XML_CHILD:  n.Move<Child>(target); break;
+        case XML_BEFORE: n.Move<Before>(target); break;
+        case XML_AFTER:  n.Move<After>(target); break;
+        default: return;
+    }
     TakeNodeError(n);
 }
 

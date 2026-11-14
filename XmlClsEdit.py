@@ -11,10 +11,10 @@ from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QInputDialog,
-    QPlainTextEdit, QToolButton, QTreeWidget, QTreeWidgetItem,
+    QPlainTextEdit, QTableWidget, QTableWidgetItem, QToolButton, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
-from XmlCls import Error, CError, XmlCls, XmlNode
+from XmlCls import Error, CError, XmlCls, XmlNode, XmlElement, Position
 
 
 XML_NODE_ROLE = int(Qt.ItemDataRole.UserRole)
@@ -55,6 +55,63 @@ class DirectEditor(QDialog):
 
     def xml(self) -> str:
         return self.editor.toPlainText()
+
+
+class AddEditor(QDialog):
+    """Collect an XmlElement and insert it through the XmlCls interface."""
+
+    def __init__(self, node: XmlNode, pos: Position, parent=None):
+        super().__init__(parent)
+        self.node = node
+        self.pos = pos
+        self.result_node = None
+        self.setWindowTitle(f"Add {pos.name}")
+        self.resize(500, 400)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Name:"))
+        self.name = QLineEdit(self)
+        layout.addWidget(self.name)
+        layout.addWidget(QLabel("Content:"))
+        self.content = QPlainTextEdit(self)
+        self.content.setMaximumHeight(100)
+        layout.addWidget(self.content)
+        layout.addWidget(QLabel("Attributes (edit the last row to add another):"))
+        self.attributes = QTableWidget(1, 2, self)
+        self.attributes.setHorizontalHeaderLabels(["Name", "Value"])
+        self.attributes.horizontalHeader().setStretchLastSection(True)
+        self.attributes.cellChanged.connect(self._attribute_changed)
+        layout.addWidget(self.attributes)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.add)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _attribute_changed(self, row, column):
+        if row == self.attributes.rowCount() - 1:
+            self.attributes.insertRow(self.attributes.rowCount())
+
+    def element(self) -> XmlElement:
+        attributes = {}
+        for row in range(self.attributes.rowCount()):
+            name = self.attributes.item(row, 0)
+            value = self.attributes.item(row, 1)
+            if name is not None:
+                attributes[name.text()] = value.text() if value is not None else ""
+        return XmlElement(attributes, self.name.text(), self.content.toPlainText())
+
+    def add(self):
+        self.result_node = self.node.Add(self.pos, XmlElement, self.element())
+        if self.node.err:
+            self.node.err.publish()
+            return
+        if self.result_node is None:
+            return
+        self.accept()
 
 
 class XmlClsEditor(QMainWindow):
@@ -149,13 +206,20 @@ class XmlClsEditor(QMainWindow):
 
         self.paste_action = QAction("&Paste", self)
         self.paste_action.setShortcut(QKeySequence.StandardKey.Paste)
-        self.paste_action.triggered.connect(lambda: self.paste_xml("AddChild"))
+        self.paste_action.triggered.connect(lambda: self.paste_xml(Position.Child))
 
         self.paste_after_action = QAction("Paste &After", self)
-        self.paste_after_action.triggered.connect(lambda: self.paste_xml("AddAfter"))
+        self.paste_after_action.triggered.connect(lambda: self.paste_xml(Position.After))
 
         self.paste_before_action = QAction("Paste &Before", self)
-        self.paste_before_action.triggered.connect(lambda: self.paste_xml("AddBefore"))
+        self.paste_before_action.triggered.connect(lambda: self.paste_xml(Position.Before))
+
+        self.add_child_action = QAction("&Child...", self)
+        self.add_child_action.triggered.connect(lambda: self.add_element(Position.Child))
+        self.add_before_action = QAction("&Before...", self)
+        self.add_before_action.triggered.connect(lambda: self.add_element(Position.Before))
+        self.add_after_action = QAction("&After...", self)
+        self.add_after_action.triggered.connect(lambda: self.add_element(Position.After))
 
         self.direct_action = QAction("&Direct...", self)
         self.direct_action.setShortcut(QKeySequence(Qt.Key.Key_F2))
@@ -213,6 +277,12 @@ class XmlClsEditor(QMainWindow):
         edit_menu.addAction(self.direct_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.delete_action)
+
+        self.add_menu = self.menuBar().addMenu("&Add")
+        self.add_menu.addAction(self.add_child_action)
+        self.add_menu.addAction(self.add_before_action)
+        self.add_menu.addAction(self.add_after_action)
+        self.add_menu.setEnabled(False)
 
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self.collapse_all_action)
@@ -278,6 +348,7 @@ class XmlClsEditor(QMainWindow):
     def selection_changed(self):
         current = self.tree.currentItem()
         if not current or not current.isSelected():
+            self.add_menu.setEnabled(len(self.select()) == 1)
             return
 
         # Prevent recursive selection notifications.
@@ -301,6 +372,7 @@ class XmlClsEditor(QMainWindow):
 
         finally:
             self.tree.blockSignals(False)
+        self.add_menu.setEnabled(len(self.select()) == 1)
 
     def select(self) -> list[XmlNode]:
         if not self.dom:
@@ -560,6 +632,7 @@ class XmlClsEditor(QMainWindow):
 
     def populate_tree(self):
         self.tree.clear()
+        self.add_menu.setEnabled(False)
         self.node_items.clear()
         self.query_nodes = []
         self.query_index = -1
@@ -735,15 +808,14 @@ class XmlClsEditor(QMainWindow):
         if mime and mime.hasFormat(CUT_MIME):
             clipboard.setText(mime.text())
 
-    def paste_xml(self, operation: str):
+    def paste_xml(self, pos: Position):
         if self.cut_node and len(self.cut_node) > 1:
             QMessageBox.warning(
-                self,
-                "Multiple Node Move",
+                self, "Multiple Node Move",
                 "Moving multiple selected nodes is not supported."
             )
             return
-        
+
         node = self.current_node()
         clipboard = QApplication.clipboard()
         mime = clipboard.mimeData()
@@ -752,11 +824,19 @@ class XmlClsEditor(QMainWindow):
             return
 
         if self.cut_node and mime and mime.hasFormat(CUT_MIME):
-            source = self.cut_node[0]
-            move = {"AddChild": "MoveChild", "AddBefore": "MoveBefore", "AddAfter": "MoveAfter"}[operation]
-            self._mutate(source, move, node)
+            self._mutate(self.cut_node[0], "Move", pos, node)
             return
-        self._mutate(node, operation, xml)
+        self._mutate(node, "Add", pos, str, xml)
+
+    def add_element(self, pos: Position):
+        nodes = self.select()
+        if len(nodes) != 1:
+            return
+        editor = AddEditor(nodes[0], pos, self)
+        if editor.exec() == QDialog.DialogCode.Accepted:
+            self.populate_tree()
+            self._set_dirty(True)
+            self.cancel_cut()
 
     def direct_edit(self):
         node = self.current_node()
@@ -788,7 +868,7 @@ class XmlClsEditor(QMainWindow):
     def _mutate(self, node: XmlNode, operation: str, *args):
         result = getattr(node, operation)(*args)
 
-        # Match C++ semantics: void methods return None; Add* returns XmlNode.
+        # Add returns XmlNode; other mutations report errors through the owner.
         target = result if isinstance(result, XmlNode) else node
         if target.err:
             target.err.publish()

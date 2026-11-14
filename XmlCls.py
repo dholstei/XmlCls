@@ -72,6 +72,19 @@ class Error:
         type(self).publisher(self)
 
 
+class Position(IntEnum):
+    Child = 0
+    Before = 1
+    After = 2
+
+
+@dataclass
+class XmlElement:
+    attributes: dict[str, str]
+    name: str
+    content: str = ""
+
+
 @dataclass(frozen=True)
 class RestorePoint:
     jid: str
@@ -126,6 +139,10 @@ class XmlCls:
         cls._lib.XmlDoc_Detach.argtypes = [c_void_p]
         cls._lib.XmlDoc_Detach.restype = None
 
+        # Serialization (canonical flag selects C14N 1.0).
+        cls._lib.XmlDoc_XML.argtypes = [c_void_p, c_int]
+        cls._lib.XmlDoc_XML.restype = c_char_p
+
         # XmlDoc operations.
         cls._lib.XmlDoc_Save.argtypes = [c_void_p, c_char_p]
         cls._lib.XmlDoc_Save.restype = None
@@ -177,22 +194,16 @@ class XmlCls:
         cls._lib.XmlNode_Error.restype = CErrorPtr
         cls._lib.XmlNode_GetPath.argtypes = [c_void_p]
         cls._lib.XmlNode_GetPath.restype = c_char_p
-        cls._lib.XmlNode_XML.argtypes = [c_void_p]
+        cls._lib.XmlNode_XML.argtypes = [c_void_p, c_int]
         cls._lib.XmlNode_XML.restype = c_char_p
         cls._lib.XmlNode_Parse.argtypes = [c_void_p, c_char_p]
         cls._lib.XmlNode_Parse.restype = c_void_p
-        cls._lib.XmlNode_AddChild.argtypes = [c_void_p, c_char_p]
-        cls._lib.XmlNode_AddChild.restype = c_void_p
-        cls._lib.XmlNode_AddBefore.argtypes = [c_void_p, c_char_p]
-        cls._lib.XmlNode_AddBefore.restype = c_void_p
-        cls._lib.XmlNode_AddAfter.argtypes = [c_void_p, c_char_p]
-        cls._lib.XmlNode_AddAfter.restype = c_void_p
-        cls._lib.XmlNode_MoveChild.argtypes = [c_void_p, c_void_p]
-        cls._lib.XmlNode_MoveChild.restype = None
-        cls._lib.XmlNode_MoveBefore.argtypes = [c_void_p, c_void_p]
-        cls._lib.XmlNode_MoveBefore.restype = None
-        cls._lib.XmlNode_MoveAfter.argtypes = [c_void_p, c_void_p]
-        cls._lib.XmlNode_MoveAfter.restype = None
+        cls._lib.XmlNode_Add.argtypes = [c_void_p, c_int, c_int, c_char_p, c_char_p,
+                                         c_char_p, POINTER(c_char_p),
+                                         POINTER(c_char_p), c_size_t]
+        cls._lib.XmlNode_Add.restype = c_void_p
+        cls._lib.XmlNode_Move.argtypes = [c_void_p, c_int, c_void_p]
+        cls._lib.XmlNode_Move.restype = None
         cls._lib.XmlNode_Delete.argtypes = [c_void_p]
         cls._lib.XmlNode_Delete.restype = None
 
@@ -246,6 +257,12 @@ class XmlCls:
             self.close()
         except Exception:
             pass
+
+    def XML(self, canonical: bool = False) -> str:
+        value = self._lib.XmlDoc_XML(self.doc, int(canonical))
+        error = self._lib.XmlDoc_Error()
+        self.err = Error(error) if error else None
+        return self._decode(value) if not self.err else ""
 
     def Save(self, filename: str) -> bool:
         if self.doc:
@@ -429,8 +446,8 @@ class XmlNode:
         self.owner.err = Error(error) if error else None
         return self.owner._decode(value) if not self.owner.err else ""
 
-    def XML(self) -> str:
-        value = self.owner._lib.XmlNode_XML(self.node)
+    def XML(self, canonical: bool = False) -> str:
+        value = self.owner._lib.XmlNode_XML(self.node, int(canonical))
         error = self.owner._lib.XmlNode_Error()
         self.owner.err = Error(error) if error else None
         return self.owner._decode(value) if not self.owner.err else ""
@@ -445,38 +462,38 @@ class XmlNode:
         self.node = c_void_p(node)
         return True
 
-    def _Add(self, function, XML: str):
-        node = function(self.node, XML.encode("utf-8"))
+    def Add(self, pos: Position, type, value: str | XmlElement):
+        """Insert an XML string or XmlElement using an explicit type selector."""
+        if type is XmlElement:
+            keys = list(value.attributes.keys())
+            values = [value.attributes[key] for key in keys]
+            names_array = (c_char_p * len(keys))(
+                *(key.encode("utf-8") for key in keys))
+            values_array = (c_char_p * len(values))(
+                *(item.encode("utf-8") for item in values))
+            node = self.owner._lib.XmlNode_Add(
+                self.node, int(pos), 1, None, value.name.encode("utf-8"),
+                value.content.encode("utf-8"),
+                names_array, values_array, len(keys))
+        elif type is str:
+            node = self.owner._lib.XmlNode_Add(
+                self.node, int(pos), 0, value.encode("utf-8"),
+                None, None, None, None, 0)
+        else:
+            raise TypeError("Add type must be str or XmlElement")
+
         error = self.owner._lib.XmlNode_Error()
         self.owner.err = Error(error) if error else None
         return XmlNode(self.owner, c_void_p(node)) if node and not self.owner.err else None
 
-    def AddChild(self, XML: str):
-        return self._Add(self.owner._lib.XmlNode_AddChild, XML)
-
-    def AddBefore(self, XML: str):
-        return self._Add(self.owner._lib.XmlNode_AddBefore, XML)
-
-    def AddAfter(self, XML: str):
-        return self._Add(self.owner._lib.XmlNode_AddAfter, XML)
-
-    def _Move(self, function, destination: "XmlNode") -> bool:
+    def Move(self, pos: Position, destination: "XmlNode") -> bool:
         if not isinstance(destination, XmlNode):
             raise TypeError("destination must be an XmlNode")
 
-        function(self.node, destination.node)
+        self.owner._lib.XmlNode_Move(self.node, int(pos), destination.node)
         error = self.owner._lib.XmlNode_Error()
         self.owner.err = Error(error) if error else None
         return not self.owner.err
-
-    def MoveChild(self, parent: "XmlNode") -> bool:
-        return self._Move(self.owner._lib.XmlNode_MoveChild, parent)
-
-    def MoveBefore(self, sibling: "XmlNode") -> bool:
-        return self._Move(self.owner._lib.XmlNode_MoveBefore, sibling)
-
-    def MoveAfter(self, sibling: "XmlNode") -> bool:
-        return self._Move(self.owner._lib.XmlNode_MoveAfter, sibling)
 
     def Delete(self) -> bool:
         self.owner._lib.XmlNode_Delete(self.node)
