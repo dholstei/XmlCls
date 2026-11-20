@@ -19,6 +19,13 @@ class CError(Structure):
 CErrorPtr = POINTER(CError)
 
 
+class Attr(Structure):
+    _fields_ = [
+        ("name", c_char_p),
+        ("value", c_char_p),
+    ]
+
+
 def PrintError(error: "Error") -> None:
     """Default Error publisher for command-line applications."""
 
@@ -204,6 +211,10 @@ class XmlCls:
         cls._lib.XmlNode_Add.restype = c_void_p
         cls._lib.XmlNode_Move.argtypes = [c_void_p, c_int, c_void_p]
         cls._lib.XmlNode_Move.restype = None
+        cls._lib.XmlNode_GetAttributes.argtypes = [c_void_p, POINTER(Attr), c_size_t]
+        cls._lib.XmlNode_GetAttributes.restype = c_size_t
+        cls._lib.XmlNode_SetAttributes.argtypes = [c_void_p, POINTER(Attr), c_size_t]
+        cls._lib.XmlNode_SetAttributes.restype = None
         cls._lib.XmlNode_Delete.argtypes = [c_void_p]
         cls._lib.XmlNode_Delete.restype = None
 
@@ -494,6 +505,29 @@ class XmlNode:
         error = self.owner._lib.XmlNode_Error()
         self.owner.err = Error(error) if error else None
         return not self.owner.err
+
+    def Attributes(self, attributes: dict[str, str] | None = None) -> dict[str, str] | None:
+        """Read all attributes, or replace them with the supplied mapping."""
+        if attributes is None:
+            count = self.owner._lib.XmlNode_GetAttributes(self.node, None, 0)
+            error = self.owner._lib.XmlNode_Error()
+            self.owner.err = Error(error) if error else None
+            if self.owner.err or not count:
+                return {}
+
+            pairs = (Attr * count)()
+            actual = self.owner._lib.XmlNode_GetAttributes(self.node, pairs, count)
+            error = self.owner._lib.XmlNode_Error()
+            self.owner.err = Error(error) if error else None
+            return {self.owner._decode(pairs[i].name): self.owner._decode(pairs[i].value)
+                    for i in range(actual)} if not self.owner.err else {}
+
+        pairs = (Attr * len(attributes))(
+            *(Attr(name.encode("utf-8"), value.encode("utf-8"))
+              for name, value in attributes.items()))
+        self.owner._lib.XmlNode_SetAttributes(self.node, pairs, len(attributes))
+        error = self.owner._lib.XmlNode_Error()
+        self.owner.err = Error(error) if error else None
 
     def Delete(self) -> bool:
         self.owner._lib.XmlNode_Delete(self.node)

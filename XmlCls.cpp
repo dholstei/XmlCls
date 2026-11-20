@@ -1008,6 +1008,89 @@ void XmlNode::JID(std::string jid)
     JRNL->jid_map[jid] = node;
 }
 
+std::map<std::string, std::string> XmlNode::Attributes()
+{
+    std::map<std::string, std::string> attributes;
+    err = {};
+
+    if (!node || !doc || node->type != XML_ELEMENT_NODE) {
+        err = Error{lvl::ERR, "Cannot read attributes: invalid element node", ""};
+        return attributes;
+    }
+
+    for (xmlAttrPtr attr = node->properties; attr; attr = attr->next) {
+        xmlChar* value = xmlNodeListGetString(doc, attr->children, 1);
+
+        attributes[reinterpret_cast<const char*>(attr->name)] =
+            value ? reinterpret_cast<const char*>(value) : "";
+
+        if (value) xmlFree(value);
+    }
+
+    return attributes;
+}
+
+void XmlNode::Attributes(std::map<std::string, std::string> attributes)
+{
+    err = {};
+
+    if (!node || !doc || node->type != XML_ELEMENT_NODE) {
+        err = Error{lvl::ERR, "Cannot set attributes: invalid element node", ""};
+        return;
+    }
+
+    MUTABLE_CHECK(doc, return);
+
+    // Reject malformed names before journaling or changing the DOM.
+    for (const auto& [name, value] : attributes) {
+        if (name.empty() || xmlValidateName(BAD_CAST name.c_str(), 0) != 0 ||
+            name.find(':') != std::string::npos) {
+            err = Error{lvl::ERR, "Cannot set attributes: invalid attribute", name};
+            return;
+        }
+    }
+
+    std::string jid;
+
+    if (JRNL) {
+        jid = JID();
+        if (err) return;
+
+        std::string original = XML();
+        if (err) return;
+
+        JRNL->LogModify(*this, original);
+        if (JRNL->err) {
+            err = JRNL->err;
+            return;
+        }
+    }
+
+    // Remove every existing attribute.
+    while (node->properties) {
+        if (xmlRemoveProp(node->properties) != 0) {
+            err = Error{lvl::ERR, "Cannot remove XML attribute", GetPath()};
+            return;
+        }
+    }
+
+    // Preserve the journal identity.
+    if (JRNL && !xmlSetProp(node, BAD_CAST "JID", BAD_CAST jid.c_str())) {
+        err = Error{lvl::ERR, "Cannot restore JID attribute", GetPath()};
+        return;
+    }
+
+    // Install the replacement attributes.
+    for (const auto& [name, value] : attributes) {
+        if (JRNL && name == "JID") continue;
+
+        if (!xmlSetProp(node, BAD_CAST name.c_str(), BAD_CAST value.c_str())) {
+            err = Error{lvl::ERR, "Cannot set XML attribute", name};
+            return;
+        }
+    }
+}
+
 void XmlNode::Delete()
 {
     if (!node) return;

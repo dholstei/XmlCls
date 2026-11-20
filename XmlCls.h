@@ -409,6 +409,17 @@ public:
         return ans;
     }
 
+    /**
+     * @brief Attributes methods.
+     * @param attributes XML attributes to set.
+     *
+     * This overload returns a `std::map<>` containing the current attributes when called without arguments
+     * and sets the attributes when called with a map.  If journaling is on, will use the `LogModify()` method
+     * to store the original node with attribute values.  Doesn't distinguish between deleted and added attributes.
+     */
+    std::map<std::string, std::string> Attributes();
+    void Attributes(std::map<std::string, std::string> attributes);
+
 private:
     // Pos objects are implementation details, not public mutation arguments.
     template<typename Pos> XmlNode Insert(Pos pos, const std::string& XML);

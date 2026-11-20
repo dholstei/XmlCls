@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,7 @@ thread_local Error LastDocErr;
 thread_local Error LastNodeErr;
 
 thread_local std::string LastString;
+thread_local std::map<std::string, std::string> LastAttributes;
 
 void ClearLastDocError()
 {
@@ -61,6 +63,12 @@ xmlNodePtr CNode(void* node)
 
 
 extern "C" {
+
+/* One name/value pair in the C attribute-array interface. */
+typedef struct attr {
+    const char* name;
+    const char* value;
+} attr_t;
 
 /*
  * Error conversion -----------------------------------------------------------
@@ -457,6 +465,48 @@ void XmlNode_Move(xmlNodePtr node, int pos, xmlNodePtr destination)
     TakeNodeError(n);
 }
 
+
+/* Return attribute count; when capacity is sufficient, fill attribute pairs.
+ * The borrowed strings remain valid until the next GetAttributes call on this
+ * thread. Callers must copy them before then.
+ */
+size_t XmlNode_GetAttributes(xmlNodePtr node, attr_t* attributes, size_t capacity)
+{
+    ClearLastNodeError();
+    LastAttributes.clear();
+    if (!node) return 0;
+
+    XmlNode n(node);
+    LastAttributes = n.Attributes();
+    TakeNodeError(n);
+    if (LastNodeErr) return 0;
+
+    const size_t count = LastAttributes.size();
+    if (attributes && capacity >= count) {
+        size_t i = 0;
+        for (const auto& [name, value] : LastAttributes) {
+            attributes[i].name = name.c_str();
+            attributes[i].value = value.c_str();
+            ++i;
+        }
+    }
+    return count;
+}
+
+void XmlNode_SetAttributes(xmlNodePtr node, const attr_t* attributes, size_t count)
+{
+    ClearLastNodeError();
+    if (!node || (count && !attributes)) return;
+
+    std::map<std::string, std::string> values;
+    for (size_t i = 0; i < count; ++i)
+        values[attributes[i].name ? attributes[i].name : ""] =
+            attributes[i].value ? attributes[i].value : "";
+
+    XmlNode n(node);
+    n.Attributes(std::move(values));
+    TakeNodeError(n);
+}
 
 void XmlNode_Delete(xmlNodePtr node)
 {

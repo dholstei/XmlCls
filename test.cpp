@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -150,6 +151,148 @@ void test_add_child_before_after_and_vectors()
     root.AddChild(std::vector<std::string>{"<C/>", "<D/>"});
     print_xml("after AddChild(vector{<C/>, <D/>})", doc);
     CHECK_EQ(doc.XPath<int>("count(/Root/C | /Root/D)"), 2);
+}
+
+void test_node_attributes()
+{
+    banner("XmlNode::Attributes without journal");
+
+    XmlDoc doc(std::string("<Root><Item Keep=\"old\" Remove=\"yes\">text<Child/></Item></Root>"));
+    CHECK(!doc.err);
+
+    XmlNode item = require_nodes(doc, "/Root/Item")[0];
+    const std::map<std::string, std::string> original{{"Keep", "old"}, {"Remove", "yes"}};
+
+    CHECK(item.Attributes() == original);
+    CHECK(!item.err);
+
+    // A setter call replaces the entire attribute map: update, add, and remove.
+    const std::map<std::string, std::string> replacement{{"Keep", "new"}, {"Added", "value"}};
+    item.Attributes(replacement);
+    print_error("Attributes(replacement)", item.err);
+    CHECK(!item.err);
+    CHECK(item.Attributes() == replacement);
+    CHECK(!item.err);
+    CHECK_EQ(doc.XPath<std::string>("/Root/Item/@Keep"), std::string("new"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/Item/@Remove)"), 0);
+    CHECK_EQ(doc.XPath<std::string>("/Root/Item/@Added"), std::string("value"));
+
+    // Reject malformed names without partially replacing valid attributes.
+    for (const char* invalid : {"Bad Name", "bad:prefix", ""}) {
+        item.Attributes({{invalid, "invalid"}});
+        CHECK(item.err);
+        CHECK_EQ(item.err.data, std::string(invalid));
+        CHECK(item.Attributes() == replacement);
+        CHECK(!item.err);
+    }
+
+    // Replacing with an empty map removes every attribute, not node content.
+    item.Attributes({});
+    CHECK(!item.err);
+    CHECK(item.Attributes().empty());
+    CHECK(!item.err);
+    CHECK_EQ(doc.XPath<std::string>("/Root/Item/text()"), std::string("text"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/Item/Child)"), 1);
+}
+
+void test_journal_attributes()
+{
+    banner("XmlNode::Attributes with journal / Modify / Undo / Redo");
+
+    const char* path = "/tmp/xmlcls_test_attributes.jrnl.xml";
+    std::remove(path);
+
+    XmlDoc doc(std::string("<Root><Item Keep=\"old\" Remove=\"yes\">content<Child/></Item></Root>"));
+    CHECK(!doc.err);
+    doc.CreateJournal(path);
+    CHECK(doc.JRNL != nullptr);
+    if (!doc.JRNL) return;
+    CHECK(!doc.JRNL->err);
+
+    XmlNode item = require_nodes(doc, "/Root/Item")[0];
+    const std::map<std::string, std::string> replacement{{"Keep", "new"}, {"Added", "value"}};
+
+    item.Attributes(replacement);
+    print_error("journaled Attributes(replacement)", item.err);
+    CHECK(!item.err);
+    CHECK(!doc.JRNL->err);
+
+    const std::string jid = item.XPath<std::string>("@JID");
+    CHECK(!jid.empty());
+    CHECK(doc.JRNL->jid_map[jid] == item.node);
+    auto updated = item.Attributes();
+    CHECK(!item.err);
+    CHECK_EQ(updated.size(), std::size_t{3});
+    CHECK_EQ(updated["JID"], jid);
+    CHECK_EQ(updated["Keep"], std::string("new"));
+    CHECK_EQ(updated["Added"], std::string("value"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/Item/@Remove)"), 0);
+
+    // Invalid input must neither mutate the node nor create a journal action.
+    item.Attributes({{"Bad Name", "invalid"}});
+    CHECK(item.err);
+    CHECK_EQ(item.err.data, std::string("Bad Name"));
+    CHECK(item.Attributes() == updated);
+    CHECK(!item.err);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change[@Type='Modify'])"), 1);
+    CHECK(doc.JRNL->jid_map[jid] == item.node);
+
+    // Exactly one Modify record, preserving the complete pre-edit node.
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change[@Type='Modify'])"), 1);
+    auto changes = doc.JRNL->active_release.XPath<std::vector<XmlNode>>("./Change[last()]");
+    CHECK_EQ(changes.size(), std::size_t{1});
+    if (changes.empty()) { std::remove(path); return; }
+    XmlNode change = changes[0];
+    CHECK_EQ(change.XPath<std::string>("@Type"), std::string("Modify"));
+    CHECK_EQ(change.XPath<std::string>("@JID"), jid);
+
+    const std::string oldXML = base64_decode(change.XPath<std::string>("./Node"));
+    CHECK(oldXML.find("Keep=\"old\"") != std::string::npos);
+    CHECK(oldXML.find("Remove=\"yes\"") != std::string::npos);
+    CHECK(oldXML.find("Added=\"value\"") == std::string::npos);
+
+    // Undo replaces the physical node. Fetch a new XmlNode before checking.
+    doc.JRNL->Undo(change);
+    print_error("Undo(Attributes)", doc.JRNL->err);
+    CHECK(!doc.JRNL->err);
+    XmlNode restored = require_nodes(doc, "/Root/Item")[0];
+    auto after_undo = restored.Attributes();
+    CHECK(!restored.err);
+    CHECK_EQ(after_undo["JID"], jid);
+    CHECK(doc.JRNL->jid_map[jid] == restored.node);
+    CHECK_EQ(after_undo["Keep"], std::string("old"));
+    CHECK_EQ(after_undo["Remove"], std::string("yes"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/Item/@Added)"), 0);
+    CHECK_EQ(doc.XPath<std::string>("/Root/Item/Child/.."), std::string("content"));
+    CHECK(change.XPath<bool>("./Reversed"));
+
+    doc.JRNL->Redo();
+    print_error("Redo(Attributes)", doc.JRNL->err);
+    CHECK(!doc.JRNL->err);
+    XmlNode redone = require_nodes(doc, "/Root/Item")[0];
+    auto after_redo = redone.Attributes();
+    CHECK(!redone.err);
+    CHECK_EQ(after_redo["JID"], jid);
+    CHECK(doc.JRNL->jid_map[jid] == redone.node);
+    CHECK_EQ(after_redo["Keep"], std::string("new"));
+    CHECK_EQ(after_redo["Added"], std::string("value"));
+    CHECK_EQ(doc.XPath<int>("count(/Root/Item/@Remove)"), 0);
+
+    // The caller determines whether attributes are dirty; every setter call logs.
+    redone.Attributes(replacement);
+    CHECK(!redone.err);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change[@Type='Modify'])"), 2);
+
+    // The JID is retained even when absent from an empty replacement map.
+    redone.Attributes({});
+    CHECK(!redone.err);
+    auto after_clear = redone.Attributes();
+    CHECK(!redone.err);
+    CHECK_EQ(after_clear.size(), std::size_t{1});
+    CHECK_EQ(after_clear["JID"], jid);
+    CHECK_EQ(doc.JRNL->XPath<int>("count(//Change[@Type='Modify'])"), 3);
+
+    std::remove(path);
 }
 
 void test_parse_replace_node()
@@ -2097,6 +2240,8 @@ int main()
     xmlInitParser();
 
     test_document_xpath();
+    test_node_attributes();
+    test_journal_attributes();
     test_templated_add_and_xml_element();
     test_templated_move_without_journal();
     test_canonical_serialization();

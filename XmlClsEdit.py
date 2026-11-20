@@ -114,6 +114,73 @@ class AddEditor(QDialog):
         self.accept()
 
 
+class AttributesEditor(QDialog):
+    """Edit an element's attributes through XmlNode.Attributes()."""
+
+    def __init__(self, node: XmlNode, attributes: dict[str, str], journaled: bool, parent=None):
+        super().__init__(parent)
+        self.node = node
+        self.original = attributes.copy()
+        self.journaled = journaled
+        self.changed = False
+        self.setWindowTitle("Edit Attributes")
+        self.resize(500, 300)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Attributes (clear a name to remove; edit the last row to add):"))
+        self.attributes = QTableWidget(len(attributes) + 1, 2, self)
+        self.attributes.setHorizontalHeaderLabels(["Name", "Value"])
+        self.attributes.horizontalHeader().setStretchLastSection(True)
+        for row, (name, value) in enumerate(attributes.items()):
+            name_item = QTableWidgetItem(name)
+            value_item = QTableWidgetItem(value)
+            if journaled and name == "JID":
+                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                name_item.setToolTip("Journal identity (read-only)")
+                value_item.setToolTip("Journal identity (read-only)")
+            self.attributes.setItem(row, 0, name_item)
+            self.attributes.setItem(row, 1, value_item)
+        self.attributes.cellChanged.connect(self._attribute_changed)
+        layout.addWidget(self.attributes)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.apply)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _attribute_changed(self, row, column):
+        if row == self.attributes.rowCount() - 1:
+            self.attributes.insertRow(self.attributes.rowCount())
+
+    def apply(self):
+        attributes = {}
+        for row in range(self.attributes.rowCount()):
+            name_item = self.attributes.item(row, 0)
+            value_item = self.attributes.item(row, 1)
+            name = name_item.text().strip() if name_item else ""
+            if not name:
+                continue
+            if name in attributes:
+                QMessageBox.warning(self, "Duplicate Attribute", f"Duplicate attribute: {name}")
+                return
+            if self.journaled and name == "JID" and name not in self.original:
+                QMessageBox.warning(self, "Journal Identity", "JID is managed by the journal")
+                return
+            attributes[name] = value_item.text() if value_item else ""
+
+        if attributes != self.original:
+            self.node.Attributes(attributes)
+            if self.node.err:
+                self.node.err.publish()
+                return
+            self.changed = True
+        self.accept()
+
+
 class XmlClsEditor(QMainWindow):
     """Present one XmlCls DOM as one QTreeWidget."""
 
@@ -225,6 +292,10 @@ class XmlClsEditor(QMainWindow):
         self.direct_action.setShortcut(QKeySequence(Qt.Key.Key_F2))
         self.direct_action.triggered.connect(self.direct_edit)
 
+        self.attributes_action = QAction("&Attributes...", self)
+        self.attributes_action.triggered.connect(self.edit_attributes)
+        self.attributes_action.setEnabled(False)
+
         # The editor's motivating operation; remove if Delete belongs elsewhere.
         self.delete_action = QAction("&Delete", self)
         self.delete_action.setShortcut(QKeySequence.StandardKey.Delete)
@@ -275,6 +346,7 @@ class XmlClsEditor(QMainWindow):
         edit_menu.addAction(self.paste_after_action)
         edit_menu.addAction(self.paste_before_action)
         edit_menu.addAction(self.direct_action)
+        edit_menu.addAction(self.attributes_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.delete_action)
 
@@ -348,7 +420,9 @@ class XmlClsEditor(QMainWindow):
     def selection_changed(self):
         current = self.tree.currentItem()
         if not current or not current.isSelected():
-            self.add_menu.setEnabled(len(self.select()) == 1)
+            single = len(self.select()) == 1
+            self.add_menu.setEnabled(single)
+            self.attributes_action.setEnabled(single)
             return
 
         # Prevent recursive selection notifications.
@@ -372,7 +446,9 @@ class XmlClsEditor(QMainWindow):
 
         finally:
             self.tree.blockSignals(False)
-        self.add_menu.setEnabled(len(self.select()) == 1)
+        single = len(self.select()) == 1
+        self.add_menu.setEnabled(single)
+        self.attributes_action.setEnabled(single)
 
     def select(self) -> list[XmlNode]:
         if not self.dom:
@@ -633,6 +709,7 @@ class XmlClsEditor(QMainWindow):
     def populate_tree(self):
         self.tree.clear()
         self.add_menu.setEnabled(False)
+        self.attributes_action.setEnabled(False)
         self.node_items.clear()
         self.query_nodes = []
         self.query_index = -1
@@ -837,6 +914,20 @@ class XmlClsEditor(QMainWindow):
             self.populate_tree()
             self._set_dirty(True)
             self.cancel_cut()
+
+    def edit_attributes(self):
+        nodes = self.select()
+        if len(nodes) != 1:
+            return
+        node = nodes[0]
+        attributes = node.Attributes()
+        if node.err:
+            node.err.publish()
+            return
+        editor = AttributesEditor(node, attributes, self.dom.HasJournal(), self)
+        if editor.exec() == QDialog.DialogCode.Accepted and editor.changed:
+            self.populate_tree()
+            self._set_dirty(True)
 
     def direct_edit(self):
         node = self.current_node()
