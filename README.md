@@ -301,6 +301,70 @@ a copy. Replacing the clipboard from any application removes the marker and
 cancels the pending move. After a successful move, the XML remains ordinary
 clipboard text and subsequent pastes create copies.
 
+## Creating, Saving and Editing
+
+### Creating a new document
+
+The `XmlDoc(const std::string)` constructor parses a complete XML document held in memory, so a new file
+starts from a minimal string. It has no file yet; `Save(filename)` supplies one:
+
+```cpp
+XmlDoc doc("<SYW><git_server/><git_user/></SYW>");
+HANDLE_ERR(doc.err);
+
+doc.Save("/home/danny/.syw.xml");    // writes the file, sets the document URL
+HANDLE_ERR(doc.err);
+```
+
+Until a name is given, the document's URL is the placeholder `noname.xml`. Calling `Save()` with no
+argument at that point would write `noname.xml` in the current directory, so always call
+`Save(filename)` first.
+
+### Saving: `Save()` and `Save(filename)`
+
+| Call | Writes to | Notes |
+|------|-----------|-------|
+| `Save(const char* filename)` | `filename` | "Save As". On success the document URL becomes `filename`. |
+| `Save()` | the document URL | The file the document was read from, or the last `Save(filename)`. Returns silently (no write, no error) if there is no URL. |
+
+Output is UTF-8, pretty-printed, with an XML declaration. Write failures are reported through `doc.err`
+(libxml2's message, `data` = filename). A `NULL` filename or a null document returns without doing anything;
+an immutable document (invalid journal) is not written and `err` is a `lvl::WARN` "Source DOM is immutable".
+
+With a journal attached, saving is transactional: the file is locked; the on-disk `STATE_JID` must still
+equal the one this DOM was loaded with (otherwise nothing is written and `err` is a `lvl::WARN` "DOM has
+changed since it was opened", meaning another writer saved first); a `Save` state is stamped; the journal is
+written and flushed first, then the source file. See *Persistent Journal Association*.
+
+### Changing values: `parse()` and `Attributes()`
+
+There is no separate "set text" call. An element, text included, is replaced as a whole with
+`XmlNode::parse(xml)`:
+
+```cpp
+XmlNode user = doc.XPath<XmlNode>("/SYW/git_user");
+user.parse("<git_user>dholstei</git_user>");
+HANDLE_ERR(user.err);
+doc.Save();
+```
+
+`parse()` details:
+
+- `xml` must be one well-formed element; its root element replaces the node (attributes and children
+  included). The new root may have a different name. Text in `xml` must already be XML-escaped
+  (`&amp;`, `&lt;`).
+- The old node is freed and the wrapper is updated to point at the new one. **Any other `XmlNode` or
+  `xmlNodePtr` to the old node or its descendants is dangling afterwards.** Re-select with XPath.
+- Whitespace-only text nodes in `xml` are kept (reading a file or string with the `XmlDoc` constructors drops
+  them).
+- Failures set `node.err`: immutable document (`lvl::WARN`), `xml` not parseable, or no root element (`data` = the first 200
+  characters of `xml`). A wrapper with no node does nothing.
+- With journaling on, the node is given a JID, the previous XML is logged as a *Modify* action and the JID
+  moves to the new node, so `Undo()` restores the old element.
+
+To change only attributes use `node.Attributes(std::map<std::string, std::string>)`; `node.Attributes()`
+returns the current ones.
+
 ## Mutation Journaling
 
 ### `XmlJrnl`

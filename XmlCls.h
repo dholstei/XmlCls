@@ -13,6 +13,8 @@
  * xmlNodePtr.
  */
 
+#pragma once
+
 #include <stdio.h>
 #include <map>
 #include <libxml/parser.h>
@@ -117,11 +119,28 @@ public:
     XmlDoc(const char *filename);
 
    /**
-    * @brief Construct an XmlDoc from an XML string.
-    * @param content Complete XML document text.
+    * @brief Construct an XmlDoc from an XML string, e.g. to create a new document.
+    * @param content Complete, well-formed XML document text (one root element).
     *
     * On success, xmlDoc::_private is set to this canonical XmlDoc wrapper. A
     * journal declared by the document element is opened automatically.
+    * Whitespace-only text nodes are dropped (XML_PARSE_NOBLANKS), as when reading a file.
+    *
+    * This is how a new file is started: construct from a minimal string, then
+    * give it a filename with Save(const char*):
+    * @code
+    * XmlDoc doc("<SYW><git_server/><git_user/></SYW>");
+    * HANDLE_ERR(doc.err);
+    * doc.Save("/home/danny/.syw.xml");     // writes the file and sets the URL
+    * HANDLE_ERR(doc.err);
+    * doc.Save();                            // later saves go to the same file
+    * @endcode
+    *
+    * @warning The document's URL is initially the placeholder `"noname.xml"`, so
+    *          Save() without a filename on a string-constructed document writes
+    *          `noname.xml` in the current directory. Call Save(const char*) first.
+    *
+    * On a parse error @ref err is set and the document handle is null.
     */
     XmlDoc(const std::string content);
 
@@ -144,18 +163,39 @@ public:
     std::ostream& operator<<(std::ostream& os) { return os << XML(); }
 
     /**
-     * @brief Save the document to a filename.
-     * @param filename Destination path.
+     * @brief Save the document to a filename ("Save As").
+     * @param filename Destination path. Existing files are overwritten; the directory must exist.
      *
-     * On success the libxml2 document URL is updated so that a later Save()
-     * without arguments writes to the same location.
+     * Writes UTF-8 XML, pretty-printed (libxml2 format flag 1) and with an XML declaration.
+     * On success the libxml2 document URL is set to @p filename (the previous URL is released)
+     * so that a later Save() without arguments writes to the same location. This is also how a
+     * document built from a string with XmlDoc(const std::string) gets its first filename.
+     *
+     * Returns without writing, and without setting @ref err, if the document is null or
+     * @p filename is NULL. An immutable document (invalid journal, see @ref immutable) is not
+     * written and @ref err is `lvl::WARN` "Source DOM is immutable".
+     *
+     * @par With a journal
+     * If a journal is attached the save is transactional:
+     *  1. the file is locked (FileLock),
+     *  2. the on-disk STATE_JID must equal this DOM's STATE_JID, otherwise nothing is written and
+     *     @ref err is `lvl::WARN` "DOM has changed since it was opened" (another writer saved first),
+     *  3. a "Save" state is stamped, the journal is saved and flushed, then the source file is
+     *     written and flushed (journal first, so STATE_JID in the source never points at a
+     *     state the journal does not contain).
+     *
+     * Write failures are reported through @ref err (message from libxml2, `data` = filename).
      */
     void Save(const char* filename);
 
     /**
      * @brief Save the document using its current libxml2 document URL.
      *
-     * If the document has no URL, the method returns without writing.
+     * The URL is the file the document was read from, or the last name given to
+     * Save(const char*). Behaves exactly like Save(const char*) with that name.
+     * If the document has no URL (or an empty one) the method returns without
+     * writing and without setting @ref err. A document constructed from a string
+     * has the placeholder URL `"noname.xml"` (see XmlDoc(const std::string)).
      */
     void Save();
     
@@ -264,8 +304,27 @@ public:
     std::ostream& operator<<(std::ostream& os) { return os << XML(); }
 
     /**
-     * @brief Replace this logical node with XML parsed from a string.
-     * @param XML Replacement node XML.
+     * @brief Replace this node, including its attributes and children, with XML parsed from a string.
+     * @param XML Replacement node XML: one well-formed element (the root element of @p XML is
+     *            used; anything else in the string is ignored). Text must be XML-escaped
+     *            (`&amp;`, `&lt;`).
+     *
+     * The element is parsed in a scratch document, copied into this node's document and swapped
+     * in for the old node, which is freed. This wrapper's @ref node is updated to the new node;
+     * **any other XmlNode or xmlNodePtr that referred to the old node (or its descendants) is
+     * left dangling.** The replacement may have a different name, so this is also the way to
+     * change an element's text:
+     * @code
+     * XmlNode n = doc.XPath<XmlNode>("/SYW/git_user");
+     * n.parse("<git_user>dholstei</git_user>");
+     * HANDLE_ERR(n.err);
+     * @endcode
+     * (Attributes alone can be changed with Attributes(std::map).) Unlike reading a file,
+     * whitespace-only text nodes inside @p XML are kept.
+     *
+     * Does nothing if this wrapper holds no node, and fails with @ref err set if the document
+     * is immutable (`lvl::WARN` "Source DOM is immutable"), @p XML does not parse, or it has no root element (the error `data` holds the
+     * first 200 characters of @p XML).
      *
      * If journaling is enabled, the existing logical node is assigned a JID,
      * the prior XML is recorded as a Modify action, and the same JID is
